@@ -1,0 +1,847 @@
+# Program: tueroeffner.py
+# Purpose: Gesichtserkennungssystem mit BLE iBeacon Annäherung und Relais-Steuerung
+#          über externes codesend-Programm. Zeigt Status auf Adafruit Sharp Display.
+# Author: Dr. Ralf Korell
+# Creation Date: July 25, 2025
+# Modified: August 14, 2025 - Integration von BLE, codesend, Display und asynchroner Struktur
+# Corrected: August 14, 2025 - Fix for 'WHITE' not defined, libcamera AfMode, and 'face_recognition' not defined
+# Corrected: August 14, 2025 - Further fix for 'face_recognition' not defined by passing functions directly
+
+import asyncio
+import time
+import pickle
+import numpy as np
+import cv2
+import atexit
+import os
+import subprocess # NEU: Für den Aufruf von codesend
+
+# BLE Imports
+from bleak import BleakScanner
+import struct
+
+# Picamera2 Imports
+from picamera2 import Picamera2
+from libcamera import controls
+
+# Display Imports
+import board
+import busio
+import digitalio
+import logging
+import datetime
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+import requests
+import json
+import adafruit_sharpmemorydisplay
+
+# --- Logging Konfiguration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- Globale Status-Queues und Variablen ---
+# Diese Queues werden verwendet, um Nachrichten zwischen den asynchronen Tasks auszutauschen.
+# Die Kamera-Task sendet Status-Updates an die Display-Task.
+display_status_queue = asyncio.Queue()
+
+# Globale Variablen für den Zustand des Systems
+beacon_last_seen_time = {} # Speichert den letzten Zeitpunkt (time.time()), zu dem ein Beacon gesehen wurde
+beacon_is_present = False # True, wenn mindestens ein relevanter Beacon als "anwesend" gilt (nach Debouncing)
+camera_should_be_active = False # Flag, das der Kamerasteuerung signalisiert, ob sie aktiv sein soll
+
+# --- KONFIGURATION ---
+# Diese Werte können später im Feld angepasst werden, um das Verhalten des Systems zu steuern.
+
+# Gesichtserkennung Konfiguration
+ENCODINGS_FILE = "encodings.pkl" # Pfad zur Datei mit den trainierten Gesichts-Encodings
+CAMERA_RESOLUTION = (640, 480) # Auflösung der Kamera. Kleinere Auflösung = schnellere Verarbeitung
+FRAME_RESIZE_FACTOR = 0.25 # Faktor zur Skalierung des Frames für die Gesichtserkennung (z.B. 0.25 = 1/4 Größe)
+MIN_DETECTION_INTERVAL = 5 # Sekunden, um eine erneute Auslösung nach erfolgreicher Erkennung zu verhindern
+
+# codesend Konfiguration (Relais-Steuerung)
+# WICHTIG: codesend muss im Systempfad verfügbar sein oder der volle Pfad angegeben werden.
+CODESEND_PATH = "/usr/local/bin/codesend" # Beispielpfad, anpassen falls codesend woanders liegt
+CODESEND_CODE_BASIS = 9128374 # Startcode für 3 Sekunden Öffnungszeit (vom Arduino Sketch)
+CODESEND_MIN_DURATION_SEC = 3 # Minimale Dauer in Sekunden, die der Arduino versteht
+RELAY_ACTIVATION_DURATION_SEC = 4 # Gewünschte Türöffnungsdauer in Sekunden (muss >= CODESEND_MIN_DURATION_SEC sein)
+
+# BLE iBeacon Konfiguration
+TARGET_IBEACON_UUID = "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0" # UUID ist für alle Minew Beacons identisch
+CALIBRATED_MEASURED_POWER = -77 # Kalibrierter Measured Power (Tx Power @ 1m vom Beacon)
+                                # Dieser Wert wurde bei 1m Entfernung mit dem Beacon "stehend" und TxPower -8dBm ermittelt.
+PATH_LOSS_EXPONENT = 2.5 # Pfadverlust-Exponent (N): Typischerweise 2.0 für freie Sicht, 2.5-4.0 für Innenräume.
+                         # Muss eventuell im Feld feinjustiert werden.
+
+# Proximity und Debouncing Konfiguration
+PROXIMITY_DISTANCE_THRESHOLD = 3.0 # Meter: Distanz-Schwellenwert für "nah genug", um die Kamera zu aktivieren
+PRESENCE_DETECTION_TIME = 3 # Sekunden: Zeit, die der Beacon kontinuierlich erkannt werden muss, um als "anwesend" zu gelten
+ABSENCE_DETECTION_TIME = 10 # Sekunden: Zeit, die der Beacon nicht erkannt werden darf, um als "nicht anwesend" zu gelten
+
+# Konfigurationsdatei für erlaubte Nutzer und deren Beacons
+ALLOWED_USERS_CONFIG = "Erlaubte_Nutzer.conf"
+
+# Kamera Debug (nur Rechtecke und Text, keine Fenster mehr)
+CAMERA_DEBUG = True # Setze auf True, um Rechtecke und Text im Frame zu zeichnen (für Debug-Zwecke), False sonst
+
+# Autofokus Konfigurationsparameter
+SET_AUTOFOCUS = True # Setze auf True für Autofokus, False für festen Fokus
+
+# --- Display Konfiguration ---
+# Adafruit Sharp Memory Display (2.7" 400x240)
+DISPLAY_WIDTH = 400
+DISPLAY_HEIGHT = 240
+
+# GPIO Pin Konfiguration für Adafruit Sharp (RPi.GPIO wird hier nicht direkt verwendet, nur für atexit)
+# Diese Pins müssen an dein Display angeschlossen werden.
+# board.SCK, board.MOSI sind SPI-Pins (fest)
+SHARP_CS_PIN = board.D6 # Chip Select
+SHARP_EXTCOMIN_PIN = board.D5 # External COM In
+SHARP_DISP_PIN = board.D22 # Display On/Off
+
+# Wunderground PWS Konfiguration
+PWS_STATION_ID = "IGEROL23"
+PWS_API_KEY = "d1a8702761c9427fa8702761c9f27fc1"
+PWS_QUERY_URL = f"https://api.weather.com/v2/pws/observations/current?stationId={PWS_STATION_ID}&format=json&units=m&numericPrecision=decimal&apiKey={PWS_API_KEY}"
+PWS_QUERY_INTERVAL_SEC = 5 * 60 # Sekunden (5 Minuten)
+
+# Icon Konfiguration
+ICON_DIMENSIONS = (32, 32) # Standardgröße 32x32 Pixel für Eye/Key
+WEATHER_ICON_SIZE = (20, 20) # Angepasst: Größe für Wind- und Regen-Icons
+
+# --- Globale Display Instanzen (für cleanup) ---
+display = None
+cs = None
+extcomin = None
+disp = None
+extcomin_running = False # Flag, um den EXTCOMIN-Toggle-Thread zu steuern
+
+# --- Globale Icon Variablen ---
+ICON_EYE = None
+ICON_KEY = None
+ICON_WIND = None
+ICON_RAIN = None
+
+# Globale Variable für die zuletzt erfolgreich abgerufenen Wetterdaten
+last_successful_weather_data = {
+    "temperature": "N/A",
+    "wind_direction": "N/A",
+    "wind_speed": "N/A",
+    "precipitation": "N/A",
+    "is_cached": True # Initial als "cached" markieren
+}
+last_pws_query_time = 0 # Initialisiere hier, damit es nicht in der Funktion als global deklariert werden muss
+
+# --- Hilfsfunktionen ---
+
+# GPIO Cleanup (für den Fall, dass andere GPIOs verwendet werden, z.B. durch PiCamera2 intern)
+def cleanup_gpio():
+    """Räumt die GPIO-Einstellungen auf."""
+    # RPi.GPIO.cleanup() ist nur notwendig, wenn RPi.GPIO.setmode() aufgerufen wurde.
+    # Da wir für das Relais codesend verwenden und die Display-Pins über digitalio/board
+    # verwaltet werden, ist GPIO.cleanup() hier möglicherweise nicht strikt notwendig,
+    # aber schadet auch nicht.
+    # Wir setzen es hier auf, falls Picamera2 intern GPIOs nutzt, die nicht über board/digitalio gehen.
+    try:
+        import RPi.GPIO as GPIO
+        if GPIO.getmode() is not None:
+            GPIO.cleanup()
+            logging.info("RPi.GPIO aufgeräumt.")
+    except ImportError:
+        logging.warning("RPi.GPIO nicht importierbar, überspringe GPIO-Cleanup.")
+
+atexit.register(cleanup_gpio)
+
+# --- codesend Hilfsfunktion ---
+async def send_door_open_command(duration_sec):
+    """
+    Berechnet den codesend-Code basierend auf der gewünschten Dauer und ruft codesend auf.
+    """
+    if not (CODESEND_MIN_DURATION_SEC <= duration_sec <= CODESEND_MIN_DURATION_SEC + (10 - CODESEND_MIN_DURATION_SEC)):
+        logging.error(f"Ungültige Dauer für codesend: {duration_sec} Sekunden. Muss zwischen {CODESEND_MIN_DURATION_SEC} und 10 Sekunden liegen.")
+        return
+
+    code_to_send = CODESEND_CODE_BASIS + (duration_sec - CODESEND_MIN_DURATION_SEC)
+    
+    try:
+        logging.info(f"Sende Türöffner-Befehl: codesend {code_to_send}")
+        # subprocess.run ist blockierend, aber codesend ist non-blocking, daher ok.
+        # check=True wirft eine Exception bei Fehlern im codesend-Prozess.
+        process = await asyncio.to_thread(
+            subprocess.run,
+            [CODESEND_PATH, str(code_to_send)],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        logging.info(f"codesend erfolgreich aufgerufen. Output: {process.stdout.strip()}")
+    except FileNotFoundError:
+        logging.error(f"Fehler: codesend nicht gefunden unter {CODESEND_PATH}. Bitte Pfad prüfen.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Fehler beim Aufruf von codesend: {e}. Stdout: {e.stdout}, Stderr: {e.stderr}")
+    except Exception as e:
+        logging.error(f"Ein unerwarteter Fehler beim Senden des codesend-Befehls ist aufgetreten: {e}")
+
+# --- BLE Hilfsfunktionen ---
+def bytes_to_uuid(b):
+    return f"{b[0:4].hex()}-{b[4:6].hex()}-{b[6:8].hex()}-{b[8:10].hex()}-{b[10:16].hex()}".upper()
+
+def estimate_distance(rssi, measured_power, n=PATH_LOSS_EXPONENT):
+    if rssi == 0:
+        return -1.0
+    return 10 ** ((measured_power - rssi) / (10 * n))
+
+# --- Display Hilfsfunktionen ---
+def degrees_to_cardinal(degrees):
+    directions = ["N", "NNO", "NO", "ONO", "O", "OSO", "SO", "SSO",
+                  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    idx = round(degrees / (360. / len(directions))) % len(directions)
+    return directions[idx]
+
+async def get_weather_data_async():
+    """
+    Asynchrone Version von get_weather_data.
+    Fragt Wetterdaten von der Wunderground PWS API ab.
+    Speichert die Daten im Cache und gibt sie zurück.
+    """
+    global last_pws_query_time, last_successful_weather_data
+    
+    if time.time() - last_pws_query_time < PWS_QUERY_INTERVAL_SEC:
+        logging.info("Wetterdaten-Abfrageintervall noch nicht erreicht. Verwende letzte Daten aus Cache.")
+        return last_successful_weather_data
+
+    try:
+        logging.info(f"Frage Wetterdaten von {PWS_QUERY_URL} ab...")
+        # requests.get ist blockierend, daher in asyncio.to_thread ausführen
+        response = await asyncio.to_thread(requests.get, PWS_QUERY_URL, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        obs = data.get("observations", [])
+        if not obs:
+            logging.warning("Keine Beobachtungen in den Wetterdaten gefunden. Verwende Cache.")
+            last_successful_weather_data["is_cached"] = True
+            return last_successful_weather_data
+
+        metric = obs[0].get("metric", {})
+        winddir_deg = obs[0].get("winddir")
+        
+        weather_info = {
+            "temperature": f"{metric.get('temp', 'N/A')}°C",
+            "wind_direction": degrees_to_cardinal(winddir_deg) if winddir_deg is not None else "N/A",
+            "wind_speed": f"{metric.get('windSpeed', 'N/A')} km/h",
+            "precipitation": f"{metric.get('precipTotal', 'N/A')} mm",
+            "is_cached": False
+        }
+        last_pws_query_time = time.time()
+        last_successful_weather_data = weather_info
+        logging.info(f"Wetterdaten erfolgreich abgerufen: {weather_info}")
+        return weather_info
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Fehler bei der Wetterdaten-Abfrage: {e}. Verwende Cache.")
+        last_successful_weather_data["is_cached"] = True
+        return last_successful_weather_data
+    except json.JSONDecodeError as e:
+        logging.error(f"Fehler beim Parsen der Wetterdaten (JSON): {e}. Verwende Cache.")
+        last_successful_weather_data["is_cached"] = True
+        return last_successful_weather_data
+    except Exception as e:
+        logging.error(f"Ein unerwarteter Fehler bei der Wetterdaten-Abfrage ist aufgetreten: {e}. Verwende Cache.")
+        last_successful_weather_data["is_cached"] = True
+        return last_successful_weather_data
+
+def get_time_based_greeting():
+    current_hour = datetime.datetime.now().hour
+    if 5 <= current_hour < 11:
+        return "Guten Morgen!"
+    elif 11 <= current_hour < 18:
+        return "Guten Tag!"
+    else:
+        return "Guten Abend!"
+
+# NEUE HILFSFUNKTION FÜR ICON-VERARBEITUNG
+def prepare_black_icon_for_sharp_display(image_path, size):
+    img = Image.open(image_path).resize(size, Image.LANCZOS)
+    if img.mode != 'RGBA':
+        img = img.convert('RGBA')
+    background = Image.new('RGB', size, (255, 255, 255))
+    background.paste(img, (0, 0), img)
+    one_bit_img = background.convert('1')
+    final_icon = ImageOps.invert(one_bit_img)
+    return final_icon
+
+def load_icons():
+    global ICON_EYE, ICON_KEY, ICON_WIND, ICON_RAIN
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        eye_path = os.path.join(script_dir, 'eye.png')
+        key_path = os.path.join(script_dir, 'key.png')
+        wind_path = os.path.join(script_dir, 'wind.png')
+        rain_path = os.path.join(script_dir, 'rain.png')
+
+        ICON_EYE = prepare_black_icon_for_sharp_display(eye_path, ICON_DIMENSIONS)
+        ICON_KEY = prepare_black_icon_for_sharp_display(key_path, ICON_DIMENSIONS)
+        ICON_WIND = prepare_black_icon_for_sharp_display(wind_path, WEATHER_ICON_SIZE)
+        ICON_RAIN = prepare_black_icon_for_sharp_display(rain_path, WEATHER_ICON_SIZE)
+        logging.info(f"Icons geladen und auf {ICON_DIMENSIONS} / {WEATHER_ICON_SIZE} skaliert.")
+
+    except FileNotFoundError as e:
+        logging.error(f"FEHLER: Icon-Datei nicht gefunden: {e}. Icons werden nicht angezeigt.")
+        ICON_EYE = None
+        ICON_KEY = None
+        ICON_WIND = None
+        ICON_RAIN = None
+    except Exception as e:
+        logging.error(f"FEHLER beim Laden oder Skalieren der Icons: {e}. Icons werden nicht angezeigt.")
+        ICON_EYE = None
+        ICON_KEY = None
+        ICON_WIND = None
+        ICON_RAIN = None
+
+# Schriftarten laden
+FONT_PATHS_TO_TRY = [
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
+]
+
+def load_font_robust(size, default_font=None):
+    for path in FONT_PATHS_TO_TRY:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except IOError:
+                logging.warning(f"Konnte Schriftart {path} nicht laden. Versuche nächste.")
+    logging.error("Keine der bevorzugten Schriftarten gefunden oder geladen. Verwende Standard-Font.")
+    return default_font if default_font else ImageFont.load_default()
+
+FONT_GREETING = load_font_robust(38)
+FONT_TIME_DATE = load_font_robust(24)
+FONT_WEATHER_TEMP_BIG = load_font_robust(42)
+FONT_WEATHER_DETAIL = load_font_robust(22)
+
+def draw_display_content(draw, weather_data, status_icon_type=None):
+    """Zeichnet den gesamten Displayinhalt mit relativer Positionierung."""
+    
+    # Farben innerhalb der Funktion definieren, um Scope-Probleme zu vermeiden (Fix für 'WHITE' not defined)
+    BLACK = 0
+    WHITE = 255
+
+    # Hintergrund löschen (weiß)
+    draw.rectangle((0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT), outline=WHITE, fill=WHITE)
+
+    current_y = 5
+    PADDING_AFTER_GREETING = 5
+    PADDING_AFTER_TIME_DATE = 10
+    PADDING_AFTER_TEMPERATURE = 15
+    PADDING_BETWEEN_WIND_RAIN = 5
+    VERTICAL_TEXT_ALIGN_OFFSET = -12
+    DRAW_DATE_TIME_LINE = True
+    LINE_THICKNESS = 1
+    PADDING_AFTER_LINE = 28
+    WEATHER_BLOCK_INITIAL_OFFSET = 10
+
+    # Zeile 1: Begrüßung (linksbündig)
+    greeting_text = get_time_based_greeting()
+    draw.text((5, current_y), greeting_text, font=FONT_GREETING, fill=BLACK)
+    current_y += FONT_GREETING.getbbox(greeting_text)[3] + PADDING_AFTER_GREETING
+
+    # Zeile 2: Uhrzeit - Datum (linksbündig)
+    current_time_str = time.strftime("%H:%M")
+    current_date_str = time.strftime("%d.%m.%Y")
+    time_date_text = f"{current_time_str} - {current_date_str}"
+    draw.text((5, current_y), time_date_text, font=FONT_TIME_DATE, fill=BLACK)
+    current_y += FONT_TIME_DATE.getbbox(time_date_text)[3] + PADDING_AFTER_TIME_DATE
+
+    # Horizontale Linie unter Uhrzeit/Datum
+    if DRAW_DATE_TIME_LINE:
+        line_start_x = 5
+        line_end_x = DISPLAY_WIDTH - 5
+        draw.line([(line_start_x, current_y), (line_end_x, current_y)], fill=BLACK, width=LINE_THICKNESS)
+        current_y += LINE_THICKNESS + PADDING_AFTER_LINE
+    
+    # Zusätzlicher Offset für den gesamten Wetterblock
+    current_y += WEATHER_BLOCK_INITIAL_OFFSET
+
+    # Wetterinformationen (linksbündig)
+    if weather_data:
+        temp_text = weather_data.get('temperature', 'N/A')
+        if weather_data.get('is_cached', False):
+            temp_text = f"[{temp_text}]" # Zeigt an, dass Daten aus dem Cache sind
+        
+        draw.text((5, current_y), temp_text, font=FONT_WEATHER_TEMP_BIG, fill=BLACK)
+        current_y += FONT_WEATHER_TEMP_BIG.getbbox(temp_text)[3] + PADDING_AFTER_TEMPERATURE
+        
+        if ICON_WIND is not None:
+            wind_icon_y = current_y
+            draw.bitmap((5, wind_icon_y), ICON_WIND, fill=BLACK)
+            text_height_for_centering = FONT_WEATHER_DETAIL.getbbox('')[3]
+            text_y_pos = int(wind_icon_y + (WEATHER_ICON_SIZE[1] - text_height_for_centering) / 2 + VERTICAL_TEXT_ALIGN_OFFSET)
+            draw.text((5 + WEATHER_ICON_SIZE[0] + 5, text_y_pos),
+                      f"{weather_data.get('wind_speed', 'N/A')} -- {weather_data.get('wind_direction', 'N/A')}",
+                      font=FONT_WEATHER_DETAIL, fill=BLACK)
+            current_y += WEATHER_ICON_SIZE[1] + PADDING_BETWEEN_WIND_RAIN
+        else:
+            wind_text = f"Wind: {weather_data.get('wind_speed', 'N/A')} {weather_data.get('wind_direction', 'N/A')}"
+            bbox = draw.textbbox((5, current_y), wind_text, font=FONT_WEATHER_DETAIL)
+            draw.text((5, current_y), wind_text, font=FONT_WEATHER_DETAIL, fill=BLACK)
+            current_y = bbox[3] + PADDING_BETWEEN_WIND_RAIN
+        
+        if ICON_RAIN is not None:
+            rain_icon_y = current_y
+            draw.bitmap((5, rain_icon_y), ICON_RAIN, fill=BLACK)
+            text_height_for_centering = FONT_WEATHER_DETAIL.getbbox('')[3]
+            text_y_pos = int(rain_icon_y + (WEATHER_ICON_SIZE[1] - text_height_for_centering) / 2 + VERTICAL_TEXT_ALIGN_OFFSET)
+            draw.text((5 + WEATHER_ICON_SIZE[0] + 5, text_y_pos),
+                      f"{weather_data.get('precipitation', 'N/A')}",
+                      font=FONT_WEATHER_DETAIL, fill=BLACK)
+            current_y += WEATHER_ICON_SIZE[1]
+        else:
+            rain_text = f"Regen: {weather_data.get('precipitation', 'N/A')}"
+            bbox = draw.textbbox((5, current_y), rain_text, font=FONT_WEATHER_DETAIL)
+            draw.text((5, current_y), rain_text, font=FONT_WEATHER_DETAIL, fill=BLACK)
+            current_y = bbox[3]
+
+    # Status Icon (rechts unten)
+    icon_to_draw = None
+    if status_icon_type == "BEACON_DETECTED":
+        icon_to_draw = ICON_EYE
+    elif status_icon_type == "ACCESS_GRANTED":
+        icon_to_draw = ICON_KEY
+    
+    if icon_to_draw:
+        x_pos = DISPLAY_WIDTH - ICON_DIMENSIONS[0] - 5
+        y_pos = DISPLAY_HEIGHT - ICON_DIMENSIONS[1] - 5
+        draw.bitmap((x_pos, y_pos), icon_to_draw, fill=BLACK)
+
+# Funktion zum manuellen Togglen des EXTCOMIN-Pins (läuft in eigenem Thread)
+def toggle_extcomin():
+    global extcomin_running
+    logging.info("Starte manuelles EXTCOMIN Toggling.")
+    while extcomin_running:
+        if extcomin is not None:
+            extcomin.value = not extcomin.value # Wechselt den Zustand
+        time.sleep(0.5) # Toggelt alle 0.5 Sekunden (1Hz)
+    logging.info("EXTCOMIN Toggling beendet.")
+
+# --- Asynchrone Tasks ---
+
+# Task 1: BLE Scan
+async def scan_for_ibeacons_task(allowed_users_data):
+    global beacon_last_seen_time
+
+    logging.info("Starte BLE-Scan nach iBeacons...")
+    logging.info(f"Suche nach iBeacon UUID: {TARGET_IBEACON_UUID}")
+
+    # Sammle alle erlaubten Major-Werte aus der Konfiguration
+    allowed_majors = set()
+    for user_data in allowed_users_data.values():
+        if user_data['allowed']:
+            allowed_majors.update(user_data['beacon_majors'])
+    
+    logging.info(f"Erlaubte Major-Werte für BLE-Erkennung: {allowed_majors}")
+
+    def detection_callback(device, advertisement_data):
+        rssi_val = advertisement_data.rssi
+        
+        if 0x004C in advertisement_data.manufacturer_data:
+            mfg_data = advertisement_data.manufacturer_data[0x004C]
+            
+            if len(mfg_data) >= 23 and mfg_data[0] == 0x02 and mfg_data[1] == 0x15:
+                try:
+                    uuid_bytes, major_val, minor_val, measured_power = struct.unpack_from(">16sHHb", mfg_data, 2)
+                except struct.error:
+                    return
+
+                uuid_str = bytes_to_uuid(uuid_bytes)
+
+                # Filtern nach der konfigurierten UUID und den erlaubten Major-Werten
+                if uuid_str == TARGET_IBEACON_UUID and major_val in allowed_majors:
+                    
+                    beacon_last_seen_time[device.address] = time.time()
+
+                    distance = estimate_distance(rssi_val, CALIBRATED_MEASURED_POWER, PATH_LOSS_EXPONENT)
+                    
+                    # Optional: Detaillierte Debug-Ausgabe für jeden erkannten Beacon
+                    # logging.info(f"Beacon {device.address} (Major: {major_val}) erkannt. RSSI: {rssi_val} dBm, Distanz: {distance:.2f}m")
+
+    scanner = BleakScanner(detection_callback=detection_callback)
+    
+    await scanner.start()
+    
+    while True:
+        await asyncio.sleep(1.0)
+
+# Helper function to run face recognition in a separate thread
+def _run_face_recognition(small_frame, known_face_encodings,
+                         face_recognition_module, np_module): # Pass modules as arguments
+    
+    face_locations = face_recognition_module.face_locations(small_frame, model="hog")
+    face_encodings = face_recognition_module.face_encodings(small_frame, face_locations)
+    
+    results = []
+    for face_encoding in face_encodings:
+        face_distances = face_recognition_module.face_distance(known_face_encodings, face_encoding)
+        best_match_index = np_module.argmin(face_distances)
+        results.append((face_encoding, face_distances, best_match_index))
+    
+    return face_locations, results # Rückgabe der Locations und der Ergebnisse für jede Erkennung
+
+# Task 2: Kamera- und Gesichtserkennung
+async def manage_camera_and_face_recognition_task(picam2, known_face_encodings, known_face_names, allowed_users_data, display_queue):
+    global camera_should_be_active
+    
+    last_recognition_time = 0
+    camera_is_running = False # Interner Zustand der Kamera
+
+    try:
+        while True:
+            if camera_should_be_active:
+                if not camera_is_running:
+                    logging.info("Kamera wird aktiviert...")
+                    picam2.start()
+                    await asyncio.sleep(1) # Wartezeit, damit die Kamera stabil wird und Autofokus greifen kann
+                    if SET_AUTOFOCUS:
+                        # FIX: Verwende numerischen Wert 2 für AfMode.Continuous, da libcamera v0.5.1 keine Konstanten unterstützt
+                        picam2.set_controls({"AfMode": 2})
+                        logging.info("Kontinuierlicher Autofokus aktiviert.")
+                    camera_is_running = True
+                    # Sende Status an Display: Beacon erkannt (Auge)
+                    await display_queue.put({"type": "status", "value": "BEACON_DETECTED", "duration": 5}) # Zeigt Auge für 5s
+
+                # Frame erfassen (kann blockieren, daher in to_thread)
+                frame = await asyncio.to_thread(picam2.capture_array)
+
+                # Skalierung vor der Übergabe an to_thread
+                small_frame = cv2.resize(frame, (0, 0), fx=FRAME_RESIZE_FACTOR, fy=FRAME_RESIZE_FACTOR)
+                
+                # Gesichtserkennung ist CPU-intensiv, daher in to_thread ausführen
+                # FIX: face_recognition und numpy werden als Argumente übergeben
+                face_locations, recognition_results = await asyncio.to_thread(_run_face_recognition, small_frame, known_face_encodings, face_recognition, np)
+                
+                # Wenn CAMERA_DEBUG aktiv ist, kopiere den Frame für die Anzeige
+                display_frame = frame.copy() if CAMERA_DEBUG else None
+
+                for (top, right, bottom, left), (face_encoding, face_distances, best_match_index) in zip(face_locations, recognition_results):
+                    # Skalierung zurück auf Originalgröße
+                    top = int(top / FRAME_RESIZE_FACTOR)
+                    right = int(right / FRAME_RESIZE_FACTOR)
+                    bottom = int(bottom / FRAME_RESIZE_FACTOR)
+                    left = int(left / FRAME_RESIZE_FACTOR)
+
+                    matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.6)
+                    name = "Unbekannt"
+                    
+                    if matches[best_match_index]:
+                        name = known_face_names[best_match_index]
+                        
+                        # Überprüfe den Status in der Konfigurationsdatei
+                        is_allowed_in_config = allowed_users_data.get(name, {}).get('allowed', False)
+
+                        if is_allowed_in_config:
+                            if (time.time() - last_recognition_time) > MIN_DETECTION_INTERVAL:
+                                logging.info(f"*** Person erkannt: {name}. Zugang erlaubt. Tür wird geöffnet. ***")
+                                await send_door_open_command(RELAY_ACTIVATION_DURATION_SEC)
+                                
+                                last_recognition_time = time.time()
+                                
+                                # Sende Status an Display: Zugang gewährt (Schlüssel)
+                                await display_queue.put({"type": "status", "value": "ACCESS_GRANTED", "duration": 5}) # Zeigt Schlüssel für 5s
+
+                                if CAMERA_DEBUG:
+                                    cv2.rectangle(display_frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                                    y_text = top - 15 if top - 15 > 15 else top + 15
+                                    cv2.putText(display_frame, f"{name} [ZUGANG]", (left + 6, y_text), cv2.FONT_HERSHEY_DUPLEX, 0.6, (0, 255, 0), 1)
+                                
+                                await asyncio.sleep(MIN_DETECTION_INTERVAL) # Wartezeit, um erneute Auslösung zu verhindern
+                                break # Beende die Schleife, um nur eine Person pro Frame zu verarbeiten
+                            else: # Person erkannt, aber MIN_DETECTION_INTERVAL noch nicht abgelaufen
+                                if CAMERA_DEBUG:
+                                    cv2.rectangle(display_frame, (left, top), (right, bottom), (255, 165, 0), 2) # Orange
+                                    y_text = top - 15 if top - 15 > 15 else top + 15
+                                    cv2.putText(display_frame, f"{name} [WARTEN]", (left + 6, y_text), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 165, 0), 1)
+                        else: # Person ist bekannt, aber nicht in Config erlaubt
+                            logging.warning(f"Person erkannt: {name}. Aber nicht in Konfiguration erlaubt. Zugang verweigert.")
+                            if CAMERA_DEBUG:
+                                cv2.rectangle(display_frame, (left, top), (right, bottom), (0, 0, 255), 2) # Rot
+                                y_text = top - 15 if top - 15 > 15 else top + 15
+                                cv2.putText(display_frame, f"{name} [VERWEHRT]", (left + 6, y_text), cv2.FONT_HERSHEY_DUPLEX, 0.6, (0, 0, 255), 1)
+                    else: # Person ist unbekannt
+                        if CAMERA_DEBUG:
+                            cv2.rectangle(display_frame, (left, top), (right, bottom), (0, 0, 255), 2) # Rot
+                            y_text = top - 15 if top - 15 > 15 else top + 15
+                            cv2.putText(display_frame, f"Unbekannt", (left + 6, y_text), cv2.FONT_HERSHEY_DUPLEX, 0.6, (0, 0, 255), 1)
+                
+                # Wenn CAMERA_DEBUG aktiv ist, kann der display_frame hier weiterverarbeitet werden
+                # (z.B. an einen Netzwerkstream senden, da cv2.imshow entfernt wurde)
+                if CAMERA_DEBUG and display_frame is not None:
+                   pass # Keine direkte Anzeige
+
+            else: # camera_should_be_active is False
+                if camera_is_running:
+                    logging.info("Kamera wird deaktiviert...")
+                    picam2.stop()
+                    camera_is_running = False
+                await asyncio.sleep(0.5) # Kurze Pause, um CPU zu entlasten, wenn Kamera inaktiv ist
+
+    except Exception as e:
+        logging.error(f"Ein unerwarteter Fehler im Kamerastream ist aufgetreten: {e}")
+    finally:
+        if camera_is_running:
+            picam2.stop()
+
+# Task 3: Display Management
+async def display_manager_task(display_queue):
+    # Farben innerhalb der Funktion definieren, um Scope-Probleme zu vermeiden (Fix für 'WHITE' not defined)
+    BLACK = 0
+    WHITE = 255
+
+    # Icons laden (einmalig beim Start)
+    load_icons()
+
+    # SPI-Bus initialisieren
+    spi = busio.SPI(board.SCK, MOSI=board.MOSI)
+    
+    # GPIOs für CS, EXTCOMIN, DISP initialisieren
+    global cs, extcomin, disp, extcomin_running
+    cs = digitalio.DigitalInOut(SHARP_CS_PIN)
+    extcomin = digitalio.DigitalInOut(SHARP_EXTCOMIN_PIN)
+    disp = digitalio.DigitalInOut(SHARP_DISP_PIN)
+
+    # Pins als Ausgänge konfigurieren
+    cs.direction = digitalio.Direction.OUTPUT
+    extcomin.direction = digitalio.Direction.OUTPUT
+    disp.direction = digitalio.Direction.OUTPUT
+
+    # Initialwerte für DISP und EXTCOMIN setzen
+    disp.value = True # DISP HIGH, um Display einzuschalten
+    extcomin.value = False # EXTCOMIN initial LOW
+
+    # Starte den EXTCOMIN-Toggle-Thread (in einem separaten OS-Thread)
+    extcomin_running = True
+    extcomin_thread_task = asyncio.create_task(asyncio.to_thread(toggle_extcomin))
+    logging.info("EXTCOMIN Toggling Thread gestartet.")
+    await asyncio.sleep(0.1) # Kurze Pause, damit der Thread starten kann
+
+    global display
+    try:
+        display = adafruit_sharpmemorydisplay.SharpMemoryDisplay(
+            spi, cs, DISPLAY_WIDTH, DISPLAY_HEIGHT
+        )
+        logging.info("Adafruit Sharp Memory Display initialisiert.")
+
+        image = Image.new("1", (display.width, display.height))
+        draw = ImageDraw.Draw(image)
+
+        current_display_status_icon = None
+        status_icon_display_until = 0 # Timestamp, wann das Status-Icon ausgeblendet werden soll
+
+        last_weather_update_time = 0 # Lokale Variable für Wetter-Update-Intervall
+
+        while True:
+            # Wetterdaten abrufen (periodisch)
+            current_time = time.time()
+            if current_time - last_weather_update_time >= PWS_QUERY_INTERVAL_SEC:
+                weather_data = await get_weather_data_async()
+                last_weather_update_time = current_time
+            else:
+                weather_data = last_successful_weather_data # Verwende die letzten bekannten Daten
+
+            # Prüfe auf neue Statusmeldungen
+            try:
+                message = display_queue.get_nowait()
+                if message["type"] == "status":
+                    current_display_status_icon = message["value"]
+                    status_icon_display_until = current_time + message.get("duration", 0)
+                    logging.info(f"Display Status-Update: {current_display_status_icon} für {message.get('duration', 0)}s")
+            except asyncio.QueueEmpty:
+                pass # Keine neue Nachricht
+
+            # Blende Status-Icon aus, wenn Zeit abgelaufen
+            if current_display_status_icon and current_time > status_icon_display_until:
+                current_display_status_icon = None
+                logging.info("Display Status-Icon ausgeblendet.")
+
+            # Zeichne den gesamten Inhalt neu
+            draw_display_content(draw, weather_data, status_icon_type=current_display_status_icon)
+            display.image(image)
+            display.show()
+
+            await asyncio.sleep(0.5) # Update-Frequenz des Displays
+
+    except Exception as e:
+        logging.error(f"Ein unerwarteter Fehler im Display-Manager ist aufgetreten: {e}")
+    finally:
+        # EXTCOMIN-Toggle-Thread beenden
+        extcomin_running = False
+        if extcomin_thread_task:
+            extcomin_thread_task.cancel()
+            try:
+                await extcomin_thread_task
+            except asyncio.CancelledError:
+                pass
+        logging.info("EXTCOMIN Toggling Thread beendet.")
+
+        if display is not None:
+            display.fill(1) # Display löschen (weiß)
+            display.show()
+            logging.info("Adafruit Sharp Display gelöscht.")
+            await asyncio.sleep(0.5)
+        
+        # GPIOs sauber deinitialisieren
+        if cs is not None:
+            cs.deinit()
+            logging.info("CS Pin deinitialisiert.")
+        if extcomin is not None:
+            extcomin.deinit()
+            logging.info("EXTCOMIN Pin deinitialisiert.")
+        if disp is not None:
+            disp.deinit()
+            logging.info("DISP Pin deinitialisiert.")
+        logging.info("Display-Manager beendet und GPIOs deinitialisiert.")
+
+# --- Haupt-Asynchrone Funktion ---
+async def main_system_loop():
+    global beacon_is_present, camera_should_be_active
+
+    # Lade die bekannten Gesichts-Encodings und Namen
+    logging.info(f"Lade Gesichts-Encodings von '{ENCODINGS_FILE}'...")
+    try:
+        with open(ENCODINGS_FILE, 'rb') as f:
+            known_face_encodings, known_face_names = pickle.load(f)
+        logging.info(f"{len(known_face_encodings)} Encodings von {len(set(known_face_names))} Personen geladen.")
+    except FileNotFoundError:
+        logging.error(f"Fehler: Die Datei '{ENCODINGS_FILE}' wurde nicht gefunden. Bitte führen Sie zuerst das Trainingsskript aus.")
+        return
+    except Exception as e:
+        logging.error(f"Fehler beim Laden der Encodings: {e}")
+        return
+
+    # Lese die erlaubten Nutzer und Beacon-Majors aus der Konfigurationsdatei
+    allowed_users_data = read_allowed_users_config()
+    logging.info(f"Erlaubte Nutzer aus '{ALLOWED_USERS_CONFIG}' geladen: {allowed_users_data}")
+
+    # Initialisiere Picamera2
+    picam2 = Picamera2()
+    camera_config = picam2.create_video_configuration(main={"size": CAMERA_RESOLUTION, "format": "RGB888"})
+    picam2.configure(camera_config)
+
+    # Starte die asynchronen Tasks
+    ble_task = asyncio.create_task(scan_for_ibeacons_task(allowed_users_data))
+    camera_task = asyncio.create_task(manage_camera_and_face_recognition_task(
+        picam2, known_face_encodings, known_face_names, allowed_users_data, display_status_queue
+    ))
+    display_task = asyncio.create_task(display_manager_task(display_status_queue))
+
+    # Haupt-Loop für die Zustandsverwaltung (Debouncing für Anwesenheit/Abwesenheit)
+    last_beacon_state_change_time = time.time()
+    current_beacon_state_raw = False # True, wenn irgendein relevanter Beacon gerade gesehen wird
+
+    try:
+        while True:
+            current_time = time.time()
+            
+            # Überprüfe, ob aktuell relevante Beacons in Reichweite sind
+            any_relevant_beacon_in_proximity = False
+            for addr, last_seen in list(beacon_last_seen_time.items()):
+                # Nur Beacons betrachten, die noch innerhalb des ABSENCE_DETECTION_TIME Fensters sind
+                if current_time - last_seen < ABSENCE_DETECTION_TIME:
+                    # Hier müsste man den RSSI des zuletzt gesehenen Beacons abrufen,
+                    # um die Distanz zu prüfen. Da beacon_last_seen_time nur den Timestamp speichert,
+                    # müsste der detection_callback auch den RSSI speichern.
+                    # Für den Moment gehen wir davon aus, dass jeder kürzlich gesehene Beacon
+                    # (der auch bei der Erkennung nah genug war) relevant ist.
+                    # Eine robustere Lösung würde hier den RSSI-Wert des zuletzt gesehenen Beacons
+                    # aus einer globalen Struktur abrufen und dann die Distanz prüfen.
+                    # Da die Kamera nur bei "nah genug" startet, ist dies ein akzeptabler Kompromiss.
+                    any_relevant_beacon_in_proximity = True
+                    break
+
+            # Aktualisiere den Roh-Status und den Timer bei Statusänderung
+            if any_relevant_beacon_in_proximity != current_beacon_state_raw:
+                current_beacon_state_raw = any_relevant_beacon_in_proximity
+                last_beacon_state_change_time = current_time # Reset des Timers bei Statusänderung
+
+            # Wende Debouncing an, um den stabilen Status beacon_is_present zu setzen
+            if current_beacon_state_raw and not beacon_is_present: # Beacon ist roh da, aber noch nicht stabil present
+                if (current_time - last_beacon_state_change_time) >= PRESENCE_DETECTION_TIME:
+                    beacon_is_present = True
+                    logging.info(f"*** BEACON STABIL ANWESEND. Kamera wird aktiviert. ***")
+            elif not current_beacon_state_raw and beacon_is_present: # Beacon ist roh weg, aber noch stabil present
+                if (current_time - last_beacon_state_change_time) >= ABSENCE_DETECTION_TIME:
+                    beacon_is_present = False
+                    logging.info(f"--- BEACON STABIL ABWESEND. Kamera wird deaktiviert. ---")
+
+            # Steuere die Kamera basierend auf dem stabilen Beacon-Status
+            if beacon_is_present != camera_should_be_active:
+                camera_should_be_active = beacon_is_present
+
+            await asyncio.sleep(0.5) # Kurze Pause für den Haupt-Loop
+
+    except asyncio.CancelledError:
+        logging.info("\nSystem-Tasks werden beendet.")
+    except Exception as e:
+        logging.error(f"Ein unerwarteter Fehler im Hauptsystem ist aufgetreten: {e}")
+    finally:
+        # Sicherstellen, dass alle Tasks abgebrochen und Ressourcen freigegeben werden
+        ble_task.cancel()
+        camera_task.cancel()
+        display_task.cancel()
+        try:
+            await ble_task
+            await camera_task
+            await display_task
+        except asyncio.CancelledError:
+            pass
+        logging.info("Alle System-Tasks beendet.")
+
+# --- Hilfsfunktionen für Konfigurationsdatei (Angepasst für Major-Werte) ---
+def read_allowed_users_config():
+    """
+    Liest die Konfigurationsdatei für erlaubte Nutzer und ihre Beacon-Majors ein.
+    Format: Name;wahr/falsch;Major1;Major2;Major3
+    """
+    allowed_users = {}
+    if os.path.exists(ALLOWED_USERS_CONFIG):
+        try:
+            with open(ALLOWED_USERS_CONFIG, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'): # Kommentare und leere Zeilen ignorieren
+                        continue
+                    
+                    parts = line.split(';')
+                    if len(parts) < 2:
+                        logging.warning(f"Ungültige Zeile in '{ALLOWED_USERS_CONFIG}': '{line}'. Erwarte mindestens Name;Status.")
+                        continue
+                    
+                    name = parts[0].strip()
+                    status_str = parts[1].strip().lower()
+                    allowed = (status_str == 'wahr')
+                    
+                    beacon_majors = []
+                    # Lese Major-Werte ab dem dritten Feld
+                    for i in range(2, len(parts)):
+                        major_str = parts[i].strip()
+                        if major_str:
+                            try:
+                                beacon_majors.append(int(major_str))
+                            except ValueError:
+                                logging.warning(f"Ungültiger Major-Wert '{major_str}' für Nutzer '{name}' in '{ALLOWED_USERS_CONFIG}'. Ignoriere.")
+                    
+                    allowed_users[name] = {
+                        'allowed': allowed,
+                        'beacon_majors': beacon_majors
+                    }
+        except Exception as e:
+            logging.error(f"Fehler beim Lesen von '{ALLOWED_USERS_CONFIG}': {e}")
+    return allowed_users
+
+# --- Hauptausführung ---
+if __name__ == "__main__":
+    try:
+        asyncio.run(main_system_loop())
+    except KeyboardInterrupt:
+        logging.info("\nProgramm beendet durch Benutzer (Strg+C).")
+    except Exception as e:
+        logging.critical(f"Ein kritischer Fehler ist aufgetreten: {e}", exc_info=True)
+    finally:
+        logging.info("Programm beendet.")

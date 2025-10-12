@@ -1,0 +1,89 @@
+# Program: camera_worker.py
+# Purpose: Separater Prozess für Kamera- und Gesichtserkennung.
+#          Kommuniziert mit dem Hauptprozess über Queues.
+# Author: CircuIT
+# Creation Date: August 15, 2025
+
+import logging
+import time
+import os
+import sys
+
+# Konfiguriere Logging für diesen Worker-Prozess, um seine Ausgaben zu sehen
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - CAMERA_WORKER - %(levelname)s - %(message)s')
+
+def camera_worker_process_function(command_queue, result_queue, initial_config):
+    """
+    Diese Funktion wird als separater Prozess ausgeführt.
+    Sie empfängt Befehle über command_queue und sendet Ergebnisse über result_queue.
+    initial_config enthält die einmalig benötigten Konfigurationsdaten (z.B. allowed_users_data).
+    """
+    logging.info("Kamera-Worker-Prozess gestartet.")
+
+    # Hier können wir die initial_config entpacken, falls nötig
+    # allowed_users_data = initial_config.get('allowed_users_data', {})
+    # logging.info(f"Kamera-Worker: Erhaltene Konfiguration: {allowed_users_data}")
+
+    try:
+        while True:
+            # Warte auf Befehle vom Hauptprozess (blockierend)
+            command_message = command_queue.get()
+            command = command_message.get("command")
+            
+            logging.info(f"Kamera-Worker: Befehl erhalten: {command}")
+
+            if command == "START_CAMERA":
+                expected_names = command_message.get("expected_names", [])
+                logging.info(f"Kamera-Worker: Befehl START_CAMERA erhalten. Erwartete Namen: {expected_names}")
+                # Hier würde später die Kamera gestartet und die Gesichtserkennung beginnen
+                
+                # Sende eine Bestätigung zurück
+                result_queue.put({"status": "CAMERA_STARTED"})
+                logging.info("Kamera-Worker: CAMERA_STARTED gesendet.")
+
+                # Simuliere etwas Arbeit und eine Erkennung
+                time.sleep(3) # Simuliere Kamerastart und Erkennung
+                
+                # Simuliere eine erfolgreiche Erkennung
+                simulated_name = "Ralf" # Beispiel
+                if simulated_name in expected_names:
+                    result_queue.put({"status": "ACCESS_GRANTED", "name": simulated_name})
+                    logging.info(f"Kamera-Worker: ACCESS_GRANTED für {simulated_name} gesendet.")
+                else:
+                    result_queue.put({"status": "ACCESS_DENIED", "name": "Unbekannt"})
+                    logging.info(f"Kamera-Worker: ACCESS_DENIED für Unbekannt gesendet.")
+
+            elif command == "STOP_CAMERA":
+                logging.info("Kamera-Worker: Befehl STOP_CAMERA erhalten.")
+                # Hier würde später die Kamera gestoppt
+                
+                # Sende eine Bestätigung zurück
+                result_queue.put({"status": "CAMERA_STOPPED"})
+                logging.info("Kamera-Worker: CAMERA_STOPPED gesendet.")
+
+            elif command == "TERMINATE":
+                logging.info("Kamera-Worker: Befehl TERMINATE erhalten. Beende Prozess.")
+                break # Schleife beenden und Prozess beenden
+
+            else:
+                logging.warning(f"Kamera-Worker: Unbekannter Befehl: {command}")
+
+    except Exception as e:
+        logging.error(f"Kamera-Worker: Ein unerwarteter Fehler ist aufgetreten: {e}", exc_info=True)
+    finally:
+        logging.info("Kamera-Worker-Prozess beendet.")
+
+if __name__ == '__main__':
+    # Dieser Block wird nur ausgeführt, wenn camera_worker.py direkt gestartet wird,
+    # nicht wenn es als Prozess von tueroeffner.py gestartet wird.
+    # Nützlich für isolierte Tests.
+    print("Dies ist der camera_worker.py. Er sollte normalerweise nicht direkt ausgeführt werden.")
+    print("Er wird als separater Prozess von tueroeffner.py gestartet.")
+    print("Für einen Test können Sie hier eine Dummy-Kommunikation einrichten.")
+    # Beispiel für einen Dummy-Test:
+    # from multiprocessing import Queue
+    # cmd_q = Queue()
+    # res_q = Queue()
+    # cmd_q.put({"command": "START_CAMERA", "expected_names": ["TestUser"]})
+    # camera_worker_process_function(cmd_q, res_q, {})
+    # print(res_q.get())

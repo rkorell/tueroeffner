@@ -1,0 +1,230 @@
+<!-- templates/config_form.html -->
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Türöffner Konfiguration</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); max-width: 900px; margin: 20px auto; }
+        h1, h2 { color: #0056b3; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 20px; }
+        h2 { font-size: 1.5em; margin-top: 30px; }
+        h3 { color: #007bff; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 20px; margin-bottom: 15px; font-size: 1.2em;} /* NEU: Für verschachtelte Gruppen */
+        .section-description { font-style: italic; color: #666; margin-bottom: 20px; }
+        .form-group { margin-bottom: 20px; padding: 15px; border: 1px solid #e0e0e0; border-radius: 6px; background-color: #f9f9f9; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: bold; color: #0056b3; }
+        .form-group input[type="text"],
+        .form-group input[type="number"],
+        .form-group select,
+        .form-group textarea {
+            width: calc(100% - 22px); /* Adjust for padding and border */
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 1em;
+            box-sizing: border-box; /* Include padding and border in the element's total width and height */
+        }
+        .form-group input[type="checkbox"] {
+            margin-right: 10px;
+        }
+        .form-group textarea {
+            min-height: 150px;
+            font-family: 'Courier New', monospace;
+        }
+        .field-description {
+            font-size: 0.9em;
+            color: #555;
+            margin-top: 5px;
+            line-height: 1.4;
+        }
+        .field-unit {
+            font-size: 0.85em;
+            color: #777;
+            margin-left: 5px;
+        }
+        .field-pattern-description {
+            font-size: 0.85em;
+            color: #c00;
+            margin-top: 5px;
+        }
+        button {
+            background-color: #28a745;
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1.1em;
+            margin-top: 20px;
+            transition: background-color 0.3s ease;
+        }
+        button:hover {
+            background-color: #218838;
+        }
+        .message {
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+
+        /* NEU: Styles für den Add-Beacon Button */
+        .beacon-controls {
+            margin-top: 10px;
+            margin-bottom: 10px;
+            text-align: right; /* Button rechtsbündig */
+        }
+        .beacon-controls button {
+            background-color: #007bff; /* Blau für Hinzufügen */
+            padding: 8px 15px;
+            font-size: 0.9em;
+            margin-top: 0;
+        }
+        .beacon-controls button:hover {
+            background-color: #0056b3;
+        }
+
+        /* NEU: Styling für verschachtelte Gruppen */
+        .nested-group-container {
+            border: 1px dashed #cccccc;
+            padding: 15px;
+            margin-bottom: 20px;
+            background-color: #f0f0f0;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Türöffner System Konfiguration</h1>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="messages">
+                    {% for category, message in messages %}
+                        <div class="message {{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        {# Define a recursive macro to render form fields based on schema #}
+        {% macro render_fields(current_schema_group, current_config_data, parent_key_prefix="") %}
+            {% for field_key, field_data in current_schema_group.fields.items() %}
+                {% set full_field_name = parent_key_prefix + field_key %}
+                {% set current_value = current_config_data.get(field_key) %}
+
+                {% if field_data.type == "group" %}
+                    {# Render nested group header #}
+                    <div class="nested-group-container"> {# Optional: for styling nested groups #}
+                        <h3>{{ field_data.label }}</h3>
+                        <p class="section-description">{{ field_data.description }}</p>
+                        {# Recursive call to render fields within this nested group #}
+                        {{ render_fields(field_data, current_value if current_value is not none else {}, full_field_name + "_") }}
+                    </div>
+                {% else %}
+                    {# Render individual field #}
+                    <div class="form-group">
+                        <label for="{{ full_field_name }}">
+                            {{ field_data.label }}
+                            {% if field_data.unit %}<span class="field-unit">({{ field_data.unit }})</span>{% endif %}
+                        </label>
+                        {% if field_data.type == "string" %}
+                            <input type="{{ 'password' if field_data.secret else 'text' }}"
+                                   id="{{ full_field_name }}"
+                                   name="{{ full_field_name }}"
+                                   value="{{ current_value if current_value is not none else '' }}"
+                                   {% if field_data.placeholder %}placeholder="{{ field_data.placeholder }}"{% endif %}
+                                   {% if field_data.pattern %}pattern="{{ field_data.pattern }}"{% endif %}>
+                            {% if field_data.pattern_description %}<p class="field-pattern-description">{{ field_data.pattern_description }}</p>{% endif %}
+                        {% elif field_data.type == "number" %}
+                            <input type="number"
+                                   id="{{ full_field_name }}"
+                                   name="{{ full_field_name }}"
+                                   value="{{ current_value if current_value is not none else '' }}"
+                                   {% if field_data.min is not none %}min="{{ field_data.min }}"{% endif %}
+                                   {% if field_data.max is not none %}max="{{ field_data.max }}"{% endif %}
+                                   {% if field_data.step is not none %}step="{{ field_data.step }}"{% endif %}>
+                        {% elif field_data.type == "boolean" %}
+                            <input type="checkbox"
+                                   id="{{ full_field_name }}"
+                                   name="{{ full_field_name }}"
+                                   value="true"
+                                   {% if current_value %}checked{% endif %}>
+                            <input type="hidden" name="{{ full_field_name }}" value="false"> {# Hidden field for unchecked state #}
+                        {% elif field_data.type == "select" %}
+                            <select id="{{ full_field_name }}" name="{{ full_field_name }}">
+                                {% for option in field_data.options %}
+                                    <option value="{{ option }}" {% if current_value == option %}selected{% endif %}>{{ option }}</option>
+                                {% endfor %}
+                            </select>
+                        {% endif %}
+                        <p class="field-description">{{ field_data.description }}</p>
+                    </div>
+                {% endif %}
+            {% endfor %}
+        {% endmacro %}
+
+        {# Main form rendering loop #}
+        <form action="/save_config" method="post">
+            {% for section_key, section_data in schema.items() %}
+                <h2>{{ section_data.label }}</h2>
+                <p class="section-description">{{ section_data.description }}</p>
+
+                {% if section_data.type == "group" %}
+                    {# Call the macro for top-level groups #}
+                    {{ render_fields(section_data, config.get(section_key, {}), section_key + "_") }}
+                {% elif section_data.type == "json_array" %}
+                    {# Special handling for json_array #}
+                    <div class="form-group">
+                        <label for="{{ section_key }}">{{ section_data.label }}</label>
+                        <div class="beacon-controls">
+                            <button type="button" onclick="addBlankBeacon()">Leeren Beacon hinzufügen</button>
+                        </div>
+                        <textarea id="{{ section_key }}" name="{{ section_key }}">{% if config.get(section_key) %}{{ config[section_key] | tojson(indent=4) }}{% endif %}</textarea>
+                        <p class="field-description">{{ section_data.description }}</p>
+                    </div>
+                {% endif %}
+            {% endfor %}
+            <button type="submit">Konfiguration speichern & System neu starten</button>
+        </form>
+    </div>
+
+    <script>
+        // NEU: JavaScript für den "Leeren Beacon hinzufügen"-Button
+        const blankBeaconTemplate = {{ blank_beacon_template | tojson }}; // Template aus Flask übergeben
+
+        function addBlankBeacon() {
+            const textarea = document.getElementById('known_beacons');
+            let currentContent = textarea.value.trim();
+            let beacons = [];
+
+            if (currentContent === '') {
+                // Wenn das Textfeld leer ist, einfach das Template als Array einfügen
+                beacons.push(blankBeaconTemplate);
+            } else {
+                try {
+                    beacons = JSON.parse(currentContent);
+                    if (!Array.isArray(beacons)) {
+                        alert('Fehler: Der Inhalt des Feldes "Bekannte Beacons" ist kein gültiges JSON-Array. Bitte korrigieren Sie die Syntax, bevor Sie einen neuen Beacon hinzufügen.');
+                        return;
+                    }
+                    beacons.push(blankBeaconTemplate);
+                } catch (e) {
+                    alert('Fehler beim Parsen des JSON-Inhalts im Feld "Bekannte Beacons": ' + e.message + '\nBitte korrigieren Sie die Syntax, bevor Sie einen neuen Beacon hinzufügen.');
+                    return;
+                }
+            }
+            
+            // Formatieren und zurück ins Textfeld schreiben
+            textarea.value = JSON.stringify(beacons, null, 4);
+            // Optional: Zum Ende des Textfeldes scrollen
+            textarea.scrollTop = textarea.scrollHeight;
+        }
+    </script>
+</body>
+</html>

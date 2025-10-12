@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "/home/pi/tueroeffner/BLE_Calibrator.py", line 541, in <module>
+    main()
+  File "/home/pi/tueroeffner/BLE_Calibrator.py", line 508, in main
+    app = BLECalibratorGUI(root, loop)
+  File "/home/pi/tueroeffner/BLE_Calibrator.py", line 165, in __init__
+    self.root.after(100, self._start_async_tasks_and_periodic_update)
+AttributeError: 'BLECalibratorGUI' object has no attribute '_start_async_tasks_and_periodic_update'
+

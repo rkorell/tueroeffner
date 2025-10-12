@@ -1,0 +1,81 @@
+{
+    "system_globals": {
+        "ibeacon_uuid": "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0",
+        "eddystone_namespace_id": "1A2B3C4D5E6F708090A0",
+        "ble_scan_interval_sec": 1.0,
+        "identification_timeout_sec": 4.0,
+        "proximity_distance_threshold": 3.0,
+        "presence_detection_time": 3,
+        "absence_detection_time": 10,
+        "calibrated_measured_power_global_default": -77,
+        "path_loss_exponent_global_default": 2.5,
+        "relay_activation_duration_sec": 4,
+        "force_beacon_absence_duration_sec": 10,
+        "initial_scan_duration_sec": 5,
+        "beacon_absence_timeout_for_home_status_sec": 3600,
+        "min_detection_interval": 20,
+        "weather_config": {
+            "station_id": "IGEROL23",
+            "api_key": "d1a8702761c9427fa8702761c9f27fc1",
+            "query_interval_sec": 300
+        },
+        "logging_config": {
+            "level": "INFO",
+            "file_enabled": true,
+            "file_path": "tuer_oeffner.log"
+        }
+    },
+    "known_beacons": [
+        {
+            "calibrated_measured_power": -69.77,
+            "eddystone_uid": {
+                "instance_id": "000000000001"
+            },
+            "eddystone_url": "https://ralf-t.korell.de",
+            "ibeacon": {
+                "major": 3112,
+                "minor": 2113
+            },
+            "is_allowed": true,
+            "mac_address": "C3:00:00:39:47:95",
+            "name": "Ralf Beacon",
+            "path_loss_exponent": 1.67
+        },
+        {
+            "calibrated_measured_power": -56.52,
+            "eddystone_uid": {
+                "instance_id": "000000000002"
+            },
+            "eddystone_url": "https://carol-a.korell.de",
+            "ibeacon": {
+                "major": 1701,
+                "minor": 1071
+            },
+            "is_allowed": true,
+            "mac_address": "C3:00:00:39:47:98",
+            "name": "Carola Beacon",
+            "path_loss_exponent": 1.86
+        },
+        {
+            "calibrated_measured_power": -62.31,
+            "eddystone_uid": {
+                "instance_id": "000000000003"
+            },
+            "eddystone_url": "https://gast-g.korell.de",
+            "ibeacon": {
+                "major": 1508,
+                "minor": 8051
+            },
+            "is_allowed": false,
+            "mac_address": "C3:00:00:39:47:92",
+            "name": "Gaeste Beacon",
+            "path_loss_exponent": 1.86
+        }
+    ],
+    "auth_criteria": {
+        "ibeacon": "OPTIONAL",
+        "eddystone_uid": "OPTIONAL",
+        "eddystone_url": "REQUIRED",
+        "mac_address": "REQUIRED"
+    }
+}
