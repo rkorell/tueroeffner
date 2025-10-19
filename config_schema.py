@@ -4,6 +4,7 @@
 # Author: CircuIT
 # Creation Date: August 18, 2025
 # Modified: October 10, 2025, 13:45 UTC - Added 'initial_scan_duration_sec' parameter to system_globals.
+# Modified: October 16, 2025, 13:00 UTC - Added 'radar_config' parameters.
 
 CONFIG_SCHEMA = {
     "system_globals": {
@@ -186,6 +187,70 @@ CONFIG_SCHEMA = {
                         "placeholder": "tuer_oeffner.log"
                     }
                 }
+            }
+        }
+    },
+    "radar_config": { # NEU: Radar Konfiguration
+        "label": "Radar Konfiguration",
+        "description": "Einstellungen für den mmWave Radar Sensor und die Türöffnungslogik.",
+        "type": "group",
+        "fields": {
+            "uart_port": {
+                "label": "UART Port",
+                "description": "Der UART-Port, an den der Radarsensor angeschlossen ist (z.B. /dev/ttyAMA2).",
+                "type": "string",
+                "placeholder": "/dev/ttyAMA2"
+            },
+            "ble_scan_max_duration": {
+                "label": "Max. BLE Scan Dauer",
+                "description": "Maximale Dauer in Sekunden, für die der BLE-Scan läuft, wenn er vom Radar ausgelöst wird. Der Scan endet früher, wenn ein berechtigter Beacon gefunden wird.",
+                "type": "number",
+                "min": 0.1,
+                "max": 2.0,
+                "step": 0.1,
+                "unit": "Sekunden"
+            },
+            "speed_noise_threshold": {
+                "label": "Geschwindigkeits-Rauschschwelle",
+                "description": "Mindestgeschwindigkeit in cm/s, die ein Objekt haben muss, um als 'bewegt' zu gelten. Kleinere Werte werden als Rauschen oder statisch ignoriert.",
+                "type": "number",
+                "min": 0,
+                "max": 20,
+                "step": 1,
+                "unit": "cm/s"
+            },
+            "expected_x_sign": {
+                "label": "Erwartetes X-Vorzeichen für Annäherung",
+                "description": "Das erwartete Vorzeichen der X-Koordinate, wenn eine Person aus der 'Kommen'-Richtung kommt. Empirisch zu bestimmen, je nach Sensor-Ausrichtung ('positive' oder 'negative').",
+                "type": "select",
+                "options": ["positive", "negative"]
+            },
+            "min_distance_to_sensor": {
+                "label": "Min. Abstand zum Sensor",
+                "description": "Minimaler Y-Abstand in mm, den eine Person zum Sensor erreichen muss, um die 'Eintrittsabsicht' zu bestätigen. (z.B. 200mm für direkt am Sensor vorbei).",
+                "type": "number",
+                "min": 50,
+                "max": 1000,
+                "step": 10,
+                "unit": "mm"
+            },
+            "door_open_comfort_delay": {
+                "label": "Türöffnungs-Komfortverzögerung",
+                "description": "Optionaler Wartezeitraum in Sekunden nach Erkennung des Türöffnungszeitpunkts, um die Benutzererfahrung zu verbessern (z.B. Tür summer, wenn Hand den Knauf erreicht).",
+                "type": "number",
+                "min": 0.0,
+                "max": 2.0,
+                "step": 0.1,
+                "unit": "Sekunden"
+            },
+            "cooldown_duration": {
+                "label": "Cooldown Dauer",
+                "description": "Dauer in Sekunden des Cooldowns nach jedem abgeschlossenen Ereigniszyklus (mit oder ohne Türöffnung).",
+                "type": "number",
+                "min": 1,
+                "max": 30,
+                "step": 1,
+                "unit": "Sekunden"
             }
         }
     },

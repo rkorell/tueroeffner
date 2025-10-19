@@ -18,7 +18,7 @@ app = Flask(__name__)
 app.secret_key = '311263' # Wichtig: Ersetzen Sie dies durch einen echten, zufälligen Schlüssel!
 
 CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'system_config.json')
-MAIN_APP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'BLE_tueroeffner.py')
+# MAIN_APP_SCRIPT wird nicht mehr benötigt, da die restart_main_app() Funktion entfernt wird.
 
 # Definition des leeren Beacon-Templates
 BLANK_BEACON_TEMPLATE = {
@@ -63,44 +63,7 @@ def save_config(config_data):
         logging.error(f"Fehler beim Speichern der Konfigurationsdatei: {e}")
         return False
 
-# NEU: Angepasste restart_main_app Funktion
-def restart_main_app():
-    """
-    Versucht, das Hauptskript BLE_tueroeffner.py neu zu starten,
-    ABER NUR, wenn es bereits zum Zeitpunkt des Aufrufs lief.
-    """
-    logging.info(f"Prüfe, ob Hauptskript {MAIN_APP_SCRIPT} aktiv ist für möglichen Neustart...")
-    
-    # 1. Prüfen, ob das Hauptprogramm aktuell läuft
-    pids_output_before = subprocess.run(['pgrep', '-f', f'python.*{os.path.basename(MAIN_APP_SCRIPT)}'], 
-                                 capture_output=True, text=True, check=False)
-    pids_before = [p for p in pids_output_before.stdout.strip().split('\n') if p]
-    
-    was_running = len(pids_before) > 0
-
-    if was_running:
-        logging.info(f"Finde laufende Instanzen von {os.path.basename(MAIN_APP_SCRIPT)} mit PIDs: {pids_before}. Beende diese...")
-        for pid in pids_before:
-            try:
-                subprocess.run(['kill', pid], check=True)
-                logging.info(f"Prozess {pid} beendet.")
-            except subprocess.CalledProcessError as e:
-                logging.warning(f"Konnte Prozess {pid} ({pid}) nicht beenden: {e.stderr.strip()}")
-        time.sleep(2) # Kurze Pause, um Prozessen Zeit zum Beenden zu geben
-
-        # 2. Hauptprogramm nur neu starten, wenn es vorher lief
-        try:
-            subprocess.Popen([sys.executable, MAIN_APP_SCRIPT], 
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, 
-                             preexec_fn=os.setsid)
-            logging.info(f"Hauptskript {MAIN_APP_SCRIPT} erfolgreich neu gestartet.")
-            return True
-        except Exception as e:
-            logging.error(f"Fehler beim Neustart des Hauptskripts: {e}", exc_info=True)
-            return False
-    else:
-        logging.info(f"Hauptskript {MAIN_APP_SCRIPT} war nicht aktiv. Kein Neustart erforderlich.")
-        return True # Erfolgreich, da kein Neustart nötig war und keine Fehler auftraten
+# Die Funktion restart_main_app() wird entfernt, wie besprochen.
 
 @app.route('/')
 def index():
@@ -137,6 +100,7 @@ def save_config_post():
                             processed_value = None # Or 0, or keep existing value
                         else:
                             processed_value = float(form_value) if '.' in form_value else int(form_value)
+                            # Validierung gegen min/max Werte aus dem Schema
                             if "min" in data and processed_value < data["min"]:
                                 raise ValueError(f"Wert für '{data['label']}' ist zu klein (min: {data['min']}).")
                             if "max" in data and processed_value > data["max"]:
@@ -160,7 +124,7 @@ def save_config_post():
                     raise # Re-raise to stop processing and redirect
 
     try:
-        # Process all "group" sections recursively
+        # Process all top-level sections (groups and json_arrays)
         for section_key, section_data in CONFIG_SCHEMA.items():
             if section_data.get("type") == "group":
                 if section_key not in updated_config or not isinstance(updated_config[section_key], dict):
@@ -192,10 +156,7 @@ def save_config_post():
         return redirect(url_for('index')) # Redirect after flashing error
 
     if save_config(updated_config):
-        if restart_main_app():
-            flash("Konfiguration erfolgreich gespeichert und System neu gestartet (falls aktiv)! ", "success")
-        else:
-            flash("Konfiguration erfolgreich gespeichert, aber System konnte nicht neu gestartet werden. Bitte manuell neu starten.", "warning")
+        flash("Konfiguration erfolgreich gespeichert.", "success") # Geänderte Meldung
     else:
         flash("Fehler beim Speichern der Konfiguration.", "error")
     
@@ -203,4 +164,9 @@ def save_config_post():
 
 if __name__ == '__main__':
     logging.info("Starte Flask Webserver...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    try:
+        app.run(host='0.0.0.0', port=5000, debug=False) # debug=False, wie besprochen
+    except KeyboardInterrupt:
+        logging.info("Flask Webserver beendet durch Benutzer (Strg+C).") # Meldung für sauberes Beenden
+    finally:
+        logging.info("Press CTRL+C to quit") # Die von Ihnen gewünschte Meldung
