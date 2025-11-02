@@ -13,6 +13,7 @@
 # Modified: October 17, 2025, 14:00 UTC - Korrektur der erwarteten Frame-Länge auf 30 Bytes für alle Modi.
 # Modified: October 17, 2025, 14:35 UTC - Leere Targets im Debug-Log unterdrücken.
 # Modified: October 26, 2025, 12:45 UTC - Target-Dekodierung-Ausgabe auf TRACE-Mode umgestellt für bessere Log-Übersicht.
+# Modified: November 02, 2025, 16:55 UTC - Korrektur (Root Cause Fix): self.targets speichert nur noch Targets mit distance > 0.
 
 import aioserial
 import asyncio
@@ -185,7 +186,9 @@ class RD03D_Async:
                 if gs.TRACE_MODE:
                     logging.info(f"TRACE: Targets dekodiert: {filtered_targets}")
                 logging.debug(f"RD03D_Async: update_async: Targets erfolgreich dekodiert: {filtered_targets}")
-                self.targets = decoded # Speichere alle dekodierten Targets
+                
+                # KORRIGIERTE ZEILE (wie besprochen): Speichere nur Targets, die keine Artefakte (distance=0) sind
+                self.targets = [t for t in decoded if t.distance > 0]
                 return True
         
         logging.debug("RD03D_Async: update_async: Kein gültiger Frame gefunden oder dekodiert.")

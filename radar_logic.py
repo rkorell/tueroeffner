@@ -12,6 +12,7 @@
 # Modified: October 26, 2025, 13:15 UTC - Y-Toleranz (50mm) eingeführt, um Radar-Messschwankungen zu kompensieren und "holpriges" Target-Tracking zu verhindern.
 # Modified: October 26, 2025, 14:15 UTC - Test-Display-Integration: Senden von Y-Distanz und X-Vorzeichenwechsel-Status an display_test_queue für Progressbar-Visualisierung.
 # Modified: November 02, 2025, 13:30 UTC - X=0 Vorzeichenwechsel-Validierung: Y-Schwellenwert (500mm) und X-Schwellenwert (700mm) hinzugefügt zur Filterung von Radar-Rauschen bei großen Distanzen.
+# Modified: November 02, 2025, 19:12 UTC - _is_approaching_target() implementiert Doku-Logik (Speed < 0 ODER Y nimmt ab) zur Rauschfilterung.
 
 import asyncio
 import time
@@ -75,7 +76,7 @@ def _is_approaching_target(target: Target, last_target_state: dict) -> bool:
     Prüfungen:
     1. Target existiert
     2. X-Richtung gemäß Config (Person kommt von der erwarteten Seite)
-    3. Y nimmt ab (Person nähert sich) - mit Toleranz für Messschwankungen
+    3. Y nimmt ab (Person nähert sich) - mit Toleranz für Messschwankungen ODER Speed ist negativ.
     """
     # 1. Target existiert?
     if target is None:
@@ -91,18 +92,33 @@ def _is_approaching_target(target: Target, last_target_state: dict) -> bool:
         logging.debug(f"RADAR: _is_approaching_target: Target x={target.x} nicht positiv (erwartet).")
         return False
     
-    # 3. Annäherung: Y nimmt ab (mit Toleranz)
-    if last_target_state is None:
-        # Erstes Target → als "approaching" werten (Zyklus beginnt)
-        logging.debug("RADAR: _is_approaching_target: Erstes Target, als approaching gewertet.")
+    # 3. Annäherung: Implementierung der ODER-Logik (Speed ODER Distanz)
+    # (gemäß Doku Level 1, 5.2.2 und Level 3, 89)
+    
+    # Kriterium A: Annäherung durch Geschwindigkeit (funktioniert auch bei 'last_target_state is None')
+    # (Doku Level 3, 89: "target.speed < 0 (Objekt bewegt sich auf den Sensor zu, gemäß rd03d_async Konvention)")
+    approaching_by_speed = (target.speed < 0)
+
+    # Kriterium B: Annäherung durch Distanz (nur prüfbar, wenn 'last_target_state' existiert)
+    approaching_by_distance = False
+    
+    if last_target_state is not None:
+        # Wir haben einen Referenzwert, wir können Distanz prüfen
+        if target.y < (last_target_state['y'] - Y_TOLERANCE_MM):
+            # Y nimmt signifikant ab
+            approaching_by_distance = True
+        elif target.y > (last_target_state['y'] + Y_TOLERANCE_MM):
+            # Y nimmt SIGNIFIKANT zu (mehr als Toleranz) → entfernt sich wirklich
+            logging.debug(f"RADAR: _is_approaching_target: Y nimmt signifikant zu (aktuell={target.y}, vorher={last_target_state['y']}, Toleranz={Y_TOLERANCE_MM}mm).")
+            return False # Direkter Abbruch, da es sich aktiv entfernt
+    
+    # Finale Entscheidung: (A ODER B)
+    if approaching_by_speed or approaching_by_distance:
         return True
-    
-    if target.y > (last_target_state['y'] + Y_TOLERANCE_MM):
-        # Y nimmt SIGNIFIKANT zu (mehr als Toleranz) → entfernt sich wirklich
-        logging.debug(f"RADAR: _is_approaching_target: Y nimmt signifikant zu (aktuell={target.y}, vorher={last_target_state['y']}, Toleranz={Y_TOLERANCE_MM}mm).")
+    else:
+        # Weder Speed noch Distanz zeigen eine Annäherung (z.B. speed=0 und Y ändert sich nicht)
+        logging.debug(f"RADAR: _is_approaching_target: Target (x={target.x}) hat korrekte X-Richtung, nähert sich aber nicht (speed={target.speed}, y={target.y}). Ignoriere.")
         return False
-    
-    return True
 
 async def radar_master_task():
     """
@@ -310,3 +326,4 @@ async def radar_master_task():
         if _radar_device:
             await _radar_device.close()
         logging.info("RADAR: Radar-Master-Task beendet und Radar-Verbindung geschlossen.")
+        

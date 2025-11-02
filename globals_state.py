@@ -13,7 +13,7 @@ import logging
 import datetime # Für last_successful_weather_data
 from PIL import Image # Für Icon-Variablen
 
-TRACE_MODE = True  # temporärer Performance-Trace (False = deaktiviert)
+TRACE_MODE = False  # temporärer Performance-Trace (False = deaktiviert)
 TEST_DISPLAY_MODE = False  # Test-Progressbar aktivieren (True = Testmodus, False = Produktivbetrieb)
 
 # --- Globale Status-Queues und Variablen ---
