@@ -16,12 +16,23 @@ import globals_state as gs
 import ble_logic_R
 import display_logic
 import radar_logic
+import sys
+import shutil
+from pathlib import Path
+
+# Cache vor dem Start löschen
+def clear_pycache():
+    project_dir = Path(__file__).parent
+    for pycache in project_dir.rglob('__pycache__'):
+        shutil.rmtree(pycache, ignore_errors=True)
+    logging.info("MAIN_R: Bytecode-Cache gelöscht.")
+    
 
 # --- Haupt-Asynchrone Funktion ---
 async def main():
     logging.info("MAIN_R: Türöffnungssystem (Radar-Version) gestartet.")
-    logging.info(f"MAIN_R: System iBeacon UUID: {config.get('system_globals.ibeacon_uuid', config.TARGET_IBEACON_UUID)}")
-    logging.info(f"MAIN_R: System Eddystone Namespace ID: {config.get('system_globals.eddystone_namespace_id', config.EDDYSTONE_NAMESPACE_ID)}")
+    #logging.info(f"MAIN_R: System iBeacon UUID: {config.get('system_globals.ibeacon_uuid', config.TARGET_IBEACON_UUID)}")
+    #logging.info(f"MAIN_R: System Eddystone Namespace ID: {config.get('system_globals.eddystone_namespace_id', config.EDDYSTONE_NAMESPACE_ID)}")
 
     # Variablen für Tasks, um sie im finally-Block referenzieren zu können
     display_task = None
@@ -95,6 +106,7 @@ async def main():
 
 # --- Hauptausführung ---
 if __name__ == "__main__":
+    clear_pycache()
     multiprocessing.set_start_method('spawn', True)
 
     try:

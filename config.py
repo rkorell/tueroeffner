@@ -42,7 +42,8 @@ LOG_FILE_PATH = "tuer_oeffner.log"
 
 # codesend Konfiguration (hardkodiert, da nicht in JSON ausgelagert)
 CODESEND_PATH = "/usr/local/bin/codesend"
-CODESEND_CODE_BASIS = 1012
+CODESEND_CODE_BASIS = 1012 # -> 1012 für testbetrieb mit Feuerwerkszünder 2013
+#CODESEND_CODE_BASIS = 9128374 # das ist der Basiscode für den Arduino-ESP332
 CODESEND_MIN_DURATION_SEC = 3
 
 # Display Konfiguration (hardkodiert, da nicht in JSON ausgelagert)

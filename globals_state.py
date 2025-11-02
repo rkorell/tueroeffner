@@ -4,6 +4,7 @@
 # Author: Dr. Ralf Korell / CircuIT
 # Creation Date: October 13, 2025
 # Modified: October 13, 2025, 12:05 UTC - Erstellung des globals_state-Moduls.
+# Modified: October 26, 2025, 14:00 UTC - TEST_DISPLAY_MODE und display_test_queue für Test-Progressbar hinzugefügt.
 
 import asyncio
 import time
@@ -11,13 +12,13 @@ import atexit
 import logging
 import datetime # Für last_successful_weather_data
 from PIL import Image # Für Icon-Variablen
-# import board, busio, digitalio, adafruit_sharpmemorydisplay # Diese Imports werden erst im Display-Modul benötigt, wenn die Instanzen erzeugt werden.
-                                                            # Hier nur die Variablen deklarieren.
 
-TRACE_MODE = False  # temporärer Performance-Trace (False = deaktiviert)
+TRACE_MODE = True  # temporärer Performance-Trace (False = deaktiviert)
+TEST_DISPLAY_MODE = False  # Test-Progressbar aktivieren (True = Testmodus, False = Produktivbetrieb)
 
 # --- Globale Status-Queues und Variablen ---
 display_status_queue = asyncio.Queue()
+display_test_queue = asyncio.Queue()  # NEU: Für Test-Progressbar-Daten
 
 # beacon_last_seen_data stores for each Beacon: {'timestamp': time.time(), 'rssi': rssi_val, 'distance': distance}
 # Initialisiert mit float('inf') für Distanz und 0 für timestamp, um "nicht gesehen" zu signalisieren

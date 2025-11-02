@@ -29,7 +29,7 @@
         "uart_port": "/dev/ttyAMA2",
         "ble_scan_max_duration": 1.5,
         "speed_noise_threshold": 5,
-        "expected_x_sign": "negative",
+        "expected_x_sign": "positive",
         "min_distance_to_sensor": 200,
         "door_open_comfort_delay": 0.5,
         "cooldown_duration": 3.0

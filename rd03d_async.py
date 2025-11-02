@@ -12,11 +12,13 @@
 # Modified: October 17, 2025, 13:50 UTC - Erneute und finale Korrektur der Pufferbereinigung in update_async() nach exakter Original-Logik.
 # Modified: October 17, 2025, 14:00 UTC - Korrektur der erwarteten Frame-Länge auf 30 Bytes für alle Modi.
 # Modified: October 17, 2025, 14:35 UTC - Leere Targets im Debug-Log unterdrücken.
+# Modified: October 26, 2025, 12:45 UTC - Target-Dekodierung-Ausgabe auf TRACE-Mode umgestellt für bessere Log-Übersicht.
 
 import aioserial
 import asyncio
 import math
 import logging
+import globals_state as gs
 
 class Target:
     def __init__(self, x, y, speed, pixel_distance):
@@ -180,7 +182,9 @@ class RD03D_Async:
             if decoded:
                 # KORREKTUR: Filtere leere Targets für das Debug-Log
                 filtered_targets = [str(t) for t in decoded if t.distance > 0]
-                logging.info(f"RD03D_Async: update_async: Targets erfolgreich dekodiert: {filtered_targets}")
+                if gs.TRACE_MODE:
+                    logging.info(f"TRACE: Targets dekodiert: {filtered_targets}")
+                logging.debug(f"RD03D_Async: update_async: Targets erfolgreich dekodiert: {filtered_targets}")
                 self.targets = decoded # Speichere alle dekodierten Targets
                 return True
         

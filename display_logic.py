@@ -3,6 +3,7 @@
 # Author: Dr. Ralf Korell / CircuIT
 # Creation Date: October 13, 2025
 # Modified: October 13, 2025, 12:30 UTC - Erstellung des display_logic-Moduls mit init_display_hardware.
+# Modified: October 26, 2025, 14:30 UTC - Test-Display-Integration: Conditional import von test_display und Abfrage von display_test_queue für Progressbar-Visualisierung im Testmodus.
 
 import asyncio
 import time
@@ -21,6 +22,11 @@ import adafruit_sharpmemorydisplay
 import config
 import globals_state as gs
 
+# Conditional import für Test-Modus
+test_display = None
+if gs.TEST_DISPLAY_MODE:
+    import test_display
+
 # --- Display Hilfsfunktionen ---
 def degrees_to_cardinal(degrees):
     directions = ["N", "NNO", "NO", "ONO", "O", "OSO", "SO", "SSO",
@@ -30,9 +36,9 @@ def degrees_to_cardinal(degrees):
 
 async def get_weather_data_async():
     
-    if time.time() - gs.last_pws_query_time < config.get("system_globals.weather_config.query_interval_sec", config.PWS_QUERY_INTERVAL_SEC):
-        logging.info("DISP: Wetterdaten-Abfrageintervall noch nicht erreicht. Verwende letzte Daten aus Cache.")
-        return gs.last_successful_weather_data
+    #if time.time() - gs.last_pws_query_time < config.get("system_globals.weather_config.query_interval_sec", config.PWS_QUERY_INTERVAL_SEC):
+     #   logging.info("DISP: Wetterdaten-Abfrageintervall noch nicht erreicht. Verwende letzte Daten aus Cache.")
+      #  return gs.last_successful_weather_data
 
     try:
         query_url = config.get("system_globals.weather_config.query_url", config.PWS_QUERY_URL)
@@ -41,7 +47,7 @@ async def get_weather_data_async():
             gs.last_successful_weather_data["is_cached"] = True
             return gs.last_successful_weather_data
 
-        logging.info(f"DISP: Frage Wetterdaten von {query_url} ab...")
+        #logging.info("DISP: Frage Wetterdaten ab...")
         response = await asyncio.to_thread(requests.get, query_url, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -62,9 +68,9 @@ async def get_weather_data_async():
             "precipitation": f"{metric.get('precipTotal', 'N/A')} mm",
             "is_cached": False
         }
-        gs.last_pws_query_time = time.time()
+        #gs.last_pws_query_time = time.time()
         gs.last_successful_weather_data = weather_info
-        logging.info(f"DISP: Wetterdaten erfolgreich abgerufen: {weather_info}")
+        logging.info("DISP: Wetterdaten erfolgreich abgerufen")
         return weather_info
 
     except requests.exceptions.RequestException as e:
@@ -300,6 +306,10 @@ async def display_manager_task():
         status_icon_display_until = 0
 
         last_weather_update_time = 0
+        
+        # Test-Display Variablen
+        test_y_distance = None
+        test_x_changed = False
 
         while True:
             current_time = time.time()
@@ -321,8 +331,22 @@ async def display_manager_task():
             if current_display_status_icon and current_time > status_icon_display_until:
                 current_display_status_icon = None
                 logging.info("DISP: Status-Icon ausgeblendet.")
-
-            draw_display_content(draw, weather_data, status_icon_type=current_display_status_icon)
+            
+            # Test-Display: Queue abfragen
+            if gs.TEST_DISPLAY_MODE:
+                try:
+                    test_msg = gs.display_test_queue.get_nowait()
+                    test_y_distance = test_msg.get("y_distance")
+                    test_x_changed = test_msg.get("x_sign_changed", False)
+                except asyncio.QueueEmpty:
+                    pass
+            
+            # Zeichnen: Test-Progressbar ODER Standard-Display
+            if gs.TEST_DISPLAY_MODE and test_display is not None and test_y_distance is not None:
+                test_display.draw_test_progressbar(draw, test_y_distance, test_x_changed)
+            else:
+                draw_display_content(draw, weather_data, status_icon_type=current_display_status_icon)
+            
             gs.display.image(image)
             gs.display.show()
 
