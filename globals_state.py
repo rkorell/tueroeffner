@@ -5,6 +5,7 @@
 # Creation Date: October 13, 2025
 # Modified: October 13, 2025, 12:05 UTC - Erstellung des globals_state-Moduls.
 # Modified: October 26, 2025, 14:00 UTC - TEST_DISPLAY_MODE und display_test_queue für Test-Progressbar hinzugefügt.
+# Modified: November 07, 2025, 14:49 UTC - Logging-Refactor: Benannter Logger, Präfixe entfernt, TRACE_MODE entfernt.
 
 import asyncio
 import time
@@ -13,7 +14,10 @@ import logging
 import datetime # Für last_successful_weather_data
 from PIL import Image # Für Icon-Variablen
 
-TRACE_MODE = False  # temporärer Performance-Trace (False = deaktiviert)
+# NEU: Benannter Logger (Phase 4.1)
+log = logging.getLogger(__name__)
+
+# --- NEU: TRACE_MODE wurde entfernt ---
 TEST_DISPLAY_MODE = False  # Test-Progressbar aktivieren (True = Testmodus, False = Produktivbetrieb)
 
 # --- Globale Status-Queues und Variablen ---
@@ -70,11 +74,11 @@ def cleanup_gpio():
         import RPi.GPIO as GPIO
         if GPIO.getmode() is not None:
             GPIO.cleanup()
-            logging.info("GLOBALS_STATE: RPi.GPIO aufgeräumt.")
+            log.info("RPi.GPIO aufgeräumt.")
     except ImportError:
-        logging.warning("GLOBALS_STATE: RPi.GPIO nicht importierbar, überspringe GPIO-Cleanup.")
+        log.warning("RPi.GPIO nicht importierbar, überspringe GPIO-Cleanup.")
     except Exception as e:
-        logging.error(f"GLOBALS_STATE: Fehler beim GPIO-Cleanup: {e}")
+        log.error(f"Fehler beim GPIO-Cleanup: {e}")
 
 # Registriere die Cleanup-Funktion, die beim Beenden des Programms aufgerufen wird
 atexit.register(cleanup_gpio)

@@ -20,7 +20,7 @@
             "query_interval_sec": 300
         },
         "logging_config": {
-            "level": "INFO",
+            "level": "DEBUG",
             "file_enabled": true,
             "file_path": "tuer_oeffner.log"
         }

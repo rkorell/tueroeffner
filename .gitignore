@@ -32,6 +32,9 @@ MANIFEST
 *.manifest
 *.spec
 
+# SECURITY! - codesend-basis code in a local secret file:
+private_config.py
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
@@ -50,7 +53,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
-
+ARCHIV/
 # Translations
 *.mo
 *.pot

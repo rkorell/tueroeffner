@@ -13,6 +13,7 @@
 # Modified: October 26, 2025, 14:15 UTC - Test-Display-Integration: Senden von Y-Distanz und X-Vorzeichenwechsel-Status an display_test_queue für Progressbar-Visualisierung.
 # Modified: November 02, 2025, 13:30 UTC - X=0 Vorzeichenwechsel-Validierung: Y-Schwellenwert (500mm) und X-Schwellenwert (700mm) hinzugefügt zur Filterung von Radar-Rauschen bei großen Distanzen.
 # Modified: November 02, 2025, 19:12 UTC - _is_approaching_target() implementiert Doku-Logik (Speed < 0 ODER Y nimmt ab) zur Rauschfilterung.
+# Modified: November 07, 2025, 13:25 UTC - Logging-Refactor: Benannter Logger, Präfixe entfernt, _is_approaching_target gibt Reason zurück, distanzabhängiges Diagnose-Logging implementiert.
 
 import asyncio
 import time
@@ -24,6 +25,9 @@ import ble_logic_R
 import door_control
 from rd03d_async import RD03D_Async, Target
 
+# NEU: Benannter Logger (Phase 3.1)
+log = logging.getLogger(__name__)
+
 # --- Hardcoded Konstanten ---
 RADAR_LOOP_DELAY = 0.05  # Sekunden Pause zwischen den Radar-Schleifendurchläufen
 BAUDRATE = 256000        # Baudrate für den RD03D Sensor
@@ -32,6 +36,9 @@ Y_TOLERANCE_MM = 50      # Toleranz für Y-Schwankungen (mm) - verhindert false 
 # Schwellenwerte für X=0 Vorzeichenwechsel-Validierung
 SIGN_CHANGE_Y_MAX = 500  # mm - Maximale Y-Distanz für gültigen Vorzeichenwechsel
 SIGN_CHANGE_X_MAX = 700  # mm - Maximaler |X|-Wert für gültigen Vorzeichenwechsel bei X=0
+
+# NEU: Schwellenwert für Diagnose-Logging (Phase 3.1)
+DIAGNOSTIC_LOG_Y_THRESHOLD = 2200 # mm - Ablehnungen unterhalb dieser Distanz werden als DEBUG geloggt, darüber als TRACE.
 
 # --- Modul-globale Variable für Radar-Instanz ---
 _radar_device: RD03D_Async = None
@@ -54,7 +61,7 @@ async def init_radar_hardware():
     Initialisiert die Radar-Hardware und stellt die Verbindung her.
     """
     global _radar_device
-    logging.info("RADAR: Initialisiere Radar-Hardware...")
+    log.info("Initialisiere Radar-Hardware...")
     
     uart_port = config.get("radar_config.uart_port", "/dev/ttyAMA2") 
     _radar_device = RD03D_Async(uart_port)
@@ -63,34 +70,29 @@ async def init_radar_hardware():
     connected = await _radar_device.connect(multi_mode=False) 
     
     if not connected:
-        logging.critical("RADAR: Fehler bei der Radar-Hardware-Initialisierung. System kann nicht starten.")
+        log.critical("Fehler bei der Radar-Hardware-Initialisierung. System kann nicht starten.")
         raise RuntimeError("Radar-Hardware konnte nicht initialisiert werden.")
     
-    logging.info("RADAR: Radar-Hardware erfolgreich initialisiert und im Single-Target-Modus.")
+    log.info("Radar-Hardware erfolgreich initialisiert und im Single-Target-Modus.")
 
-def _is_approaching_target(target: Target, last_target_state: dict) -> bool:
+def _is_approaching_target(target: Target, last_target_state: dict) -> (bool, str):
     """
     Prüft, ob ein Target relevant ist UND sich nähert.
     Vereint alle notwendigen Checks in einer Funktion.
     
-    Prüfungen:
-    1. Target existiert
-    2. X-Richtung gemäß Config (Person kommt von der erwarteten Seite)
-    3. Y nimmt ab (Person nähert sich) - mit Toleranz für Messschwankungen ODER Speed ist negativ.
+    Gibt (bool is_approaching, str rejection_reason) zurück.
+    rejection_reason ist None bei Erfolg.
     """
     # 1. Target existiert?
     if target is None:
-        logging.debug("RADAR: _is_approaching_target: Target ist None.")
-        return False
+        return (False, "Target ist None")
     
     # 2. X-Richtung gemäß Config (Person KOMMT von der richtigen Seite)
     expected_x_sign = config.get("radar_config.expected_x_sign", "negative")
     if expected_x_sign == "negative" and target.x >= 0:
-        logging.debug(f"RADAR: _is_approaching_target: Target x={target.x} nicht negativ (erwartet).")
-        return False
+        return (False, f"Target (x={target.x}) nicht negativ (erwartet).")
     if expected_x_sign == "positive" and target.x <= 0:
-        logging.debug(f"RADAR: _is_approaching_target: Target x={target.x} nicht positiv (erwartet).")
-        return False
+        return (False, f"Target (x={target.x}) nicht positiv (erwartet).")
     
     # 3. Annäherung: Implementierung der ODER-Logik (Speed ODER Distanz)
     # (gemäß Doku Level 1, 5.2.2 und Level 3, 89)
@@ -109,16 +111,15 @@ def _is_approaching_target(target: Target, last_target_state: dict) -> bool:
             approaching_by_distance = True
         elif target.y > (last_target_state['y'] + Y_TOLERANCE_MM):
             # Y nimmt SIGNIFIKANT zu (mehr als Toleranz) → entfernt sich wirklich
-            logging.debug(f"RADAR: _is_approaching_target: Y nimmt signifikant zu (aktuell={target.y}, vorher={last_target_state['y']}, Toleranz={Y_TOLERANCE_MM}mm).")
-            return False # Direkter Abbruch, da es sich aktiv entfernt
+            return (False, f"Y nimmt signifikant zu (aktuell={target.y}, vorher={last_target_state['y']}, Toleranz={Y_TOLERANCE_MM}mm).")
     
     # Finale Entscheidung: (A ODER B)
     if approaching_by_speed or approaching_by_distance:
-        return True
+        return (True, None) # Erfolg
     else:
         # Weder Speed noch Distanz zeigen eine Annäherung (z.B. speed=0 und Y ändert sich nicht)
-        logging.debug(f"RADAR: _is_approaching_target: Target (x={target.x}) hat korrekte X-Richtung, nähert sich aber nicht (speed={target.speed}, y={target.y}). Ignoriere.")
-        return False
+        return (False, f"Hat korrekte X-Richtung (x={target.x}), nähert sich aber nicht (speed={target.speed}, y={target.y}).")
+
 
 async def radar_master_task():
     """
@@ -126,10 +127,10 @@ async def radar_master_task():
     """
     global _radar_device
     if _radar_device is None:
-        logging.critical("RADAR: radar_master_task kann nicht gestartet werden, Radar-Hardware nicht initialisiert.")
+        log.critical("radar_master_task kann nicht gestartet werden, Radar-Hardware nicht initialisiert.")
         return
 
-    logging.info("RADAR: Starte Radar-Master-Task.")
+    log.info("Starte Radar-Master-Task.")
 
     # --- Interne Zustandsvariablen ---
     ble_identification_task: asyncio.Task = None
@@ -152,7 +153,7 @@ async def radar_master_task():
             # Radardaten lesen
             updated = await _radar_device.update_async()
             if not updated:
-                logging.debug("RADAR: update_async: Keine neuen gültigen Radar-Frames gefunden.")
+                log.trace("update_async: Keine neuen gültigen Radar-Frames gefunden.")
 
             # Relevantestes Target finden (im Single-Target-Modus ist es immer Target 1)
             target: Target = _radar_device.get_target(1)
@@ -166,26 +167,14 @@ async def radar_master_task():
 
             # --- ZUERST: Türöffnung prüfen (VOR dem Target-Verlust-Check!) ---
             if ble_identification_result is True:
-                logging.debug(f"DEBUG: Prüfe Türöffnung. ble_result={ble_identification_result}, last_target_state={'vorhanden' if last_target_state else 'None'}")
+                log.debug(f"Prüfe Türöffnung. ble_result={ble_identification_result}, last_target_state={'vorhanden' if last_target_state else 'None'}")
             
-
-                # RKORELL:: KRITISCH: Prüfe target ZUERST!
-                #if target is None:
-                #    logging.debug("RADAR: Target ist None, überspringe Vorzeichenwechsel-Check.")
-                #    await asyncio.sleep(RADAR_LOOP_DELAY)
-                #    continue
-                
-                # END RKORELL ::: AB HIER ist target garantiert NICHT None!
-
-
-
-
                 # Vorzeichenwechsel von X prüfen
                 if last_target_state and target is not None:
                     prev_x = last_target_state['x']
                     current_x = target.x
                     
-                    logging.debug(f"DEBUG: Vorzeichenwechsel-Check: prev_x={prev_x}, current_x={current_x}, Produkt={prev_x * current_x}")
+                    log.debug(f"Vorzeichenwechsel-Check: prev_x={prev_x}, current_x={current_x}, Produkt={prev_x * current_x}")
                     
                     valid_sign_change_detected = False
                     
@@ -197,16 +186,16 @@ async def radar_master_task():
                             if (expected_x_sign == "negative" and prev_x < 0 and prev_x > -SIGN_CHANGE_X_MAX) or \
                                (expected_x_sign == "positive" and prev_x > 0 and prev_x < SIGN_CHANGE_X_MAX):
                                 valid_sign_change_detected = True
-                                logging.info(f"RADAR: X-Vorzeichenwechsel erkannt (von {prev_x} zu 0, y={target.y}mm). Türöffnungszeitpunkt erreicht.")
+                                log.info(f"X-Vorzeichenwechsel erkannt (von {prev_x} zu 0, y={target.y}mm). Türöffnungszeitpunkt erreicht.")
                             else:
-                                logging.debug(f"RADAR: X=0 verworfen (prev_x={prev_x}). Falsche Richtung (expected: {expected_x_sign}).")
+                                log.debug(f"X=0 verworfen (prev_x={prev_x}). Falsche Richtung (expected: {expected_x_sign}).")
                         else:
-                            logging.debug(f"RADAR: X=0 verworfen (prev_x={prev_x}, y={target.y}mm). Schwellenwerte überschritten.")
+                            log.debug(f"X=0 verworfen (prev_x={prev_x}, y={target.y}mm). Schwellenwerte überschritten.")
                     
                     # Fall 2: Echter +/- Wechsel
                     elif prev_x * current_x < 0:
                         valid_sign_change_detected = True
-                        logging.info(f"RADAR: X-Vorzeichenwechsel erkannt (von {prev_x} zu {current_x}, y={target.y}mm). Türöffnungszeitpunkt erreicht.")
+                        log.info(f"X-Vorzeichenwechsel erkannt (von {prev_x} zu {current_x}, y={target.y}mm). Türöffnungszeitpunkt erreicht.")
                     
                     if valid_sign_change_detected:
                         # Test-Display: X-Vorzeichenwechsel signalisieren
@@ -232,7 +221,7 @@ async def radar_master_task():
                         cooldown_duration = config.get("radar_config.cooldown_duration", 3.0)
                         cooldown_active_until = current_time + cooldown_duration
                         
-                        logging.info("RADAR: Tür geöffnet und Cooldown gestartet.")
+                        log.info("Tür geöffnet und Cooldown gestartet.")
                         
                         # Test-Display: Reset-Signal (zurück zu Standard-Display)
                         if gs.TEST_DISPLAY_MODE:
@@ -253,23 +242,31 @@ async def radar_master_task():
                         continue
 
             # --- DANN: Target-Annäherung prüfen (für BLE-Scan und Target-Tracking) ---
-            # Wenn BLE bereits erfolgreich, überspringen wir die "approaching"-Prüfung nicht,
-            # da wir weiterhin das Target verfolgen müssen für den Vorzeichenwechsel
-            if not _is_approaching_target(target, last_target_state):
-                logging.debug("RADAR: Kein annäherndes Target nach Filterung.")
-                # Kein relevantes Target gefunden oder Target hat sich entfernt
+            
+            is_approaching, rejection_reason = _is_approaching_target(target, last_target_state)
+
+            if not is_approaching:
+                # NEUE DIAGNOSE-LOGIK (distanzabhängig)
+                if target and target.y < DIAGNOSTIC_LOG_Y_THRESHOLD:
+                    # Das ist ein "plausibler Fehler", den wir im DEBUG-Log sehen wollen
+                    log.debug(f"Target verworfen (Plausibel): {rejection_reason}")
+                else:
+                    # Das ist "Rauschen" (weit weg oder None), das wir nur im TRACE-Log sehen wollen
+                    log.trace(f"Target verworfen (Rauschen): {rejection_reason}")
+                
+                # --- Original-Logik für Target-Verlust ---
                 if ble_identification_task and not ble_identification_task.done():
                     ble_identification_task.cancel()
-                    logging.info("RADAR: Target verloren. BLE-Scan abgebrochen, Zyklus wird zurückgesetzt.")
+                    log.info("Target verloren. BLE-Scan abgebrochen, Zyklus wird zurückgesetzt.")
                 
                 ble_identification_task = None
                 
                 # NUR zurücksetzen, wenn BLE noch nicht erfolgreich war
                 if ble_identification_result is not True:
                     ble_identification_result = None
-                    logging.debug("RADAR: Zyklus komplett zurückgesetzt (BLE war noch nicht erfolgreich).")
+                    log.trace("Zyklus komplett zurückgesetzt (BLE war noch nicht erfolgreich).")
                 else:
-                    logging.debug("RADAR: Target kurz verloren, aber BLE bereits erfolgreich - behalte Status bei.")
+                    log.trace("Target kurz verloren, aber BLE bereits erfolgreich - behalte Status bei.")
                 
                 last_target_state = None
                 
@@ -277,12 +274,12 @@ async def radar_master_task():
                 continue
 
             # --- Wenn ein relevantes, annäherndes Target gefunden wurde ---
-            logging.debug(f"RADAR: Annäherndes Target gefunden: {target}")
+            log.debug(f"Annäherndes Target gefunden: {target}")
 
             # Sicherstellen, dass last_target_state initialisiert ist, wenn ein neues Target auftaucht
             if last_target_state is None:
                 last_target_state = {'y': target.y, 'x': target.x, 'angle': target.angle, 'speed': target.speed}
-                logging.info(f"RADAR: Neues Target erkannt, Zyklus startet mit: {target}")
+                log.info(f"Neues Target erkannt, Zyklus startet mit: {target}")
 
             # --- BLE-Identifikation starten/prüfen ---
             # Nur starten, wenn noch kein Task läuft UND noch kein Ergebnis vorliegt
@@ -291,7 +288,7 @@ async def radar_master_task():
                 ble_identification_task = asyncio.create_task(
                     ble_logic_R.perform_on_demand_identification(ble_scan_max_duration)
                 )
-                logging.info("RADAR: Annäherung erkannt. Starte BLE-Scan im Hintergrund.")
+                log.info("Annäherung erkannt. Starte BLE-Scan im Hintergrund.")
             
             # Prüfe, ob der Hintergrund-BLE-Scan abgeschlossen ist
             if ble_identification_task and ble_identification_task.done():
@@ -299,31 +296,30 @@ async def radar_master_task():
                     ble_identification_result = ble_identification_task.result()
                     ble_identification_task = None
                     if ble_identification_result:
-                        logging.info("RADAR: BLE-Identifikation erfolgreich.")
-                        logging.debug(f"DEBUG: BLE erfolgreich. ble_result={ble_identification_result}, last_target_state={last_target_state}")
+                        log.info("BLE-Identifikation erfolgreich.")
+                        log.debug(f"BLE erfolgreich. ble_result={ble_identification_result}, last_target_state={last_target_state}")
                     else:
-                        logging.info("RADAR: BLE-Identifikation fehlgeschlagen.")
+                        log.info("BLE-Identifikation fehlgeschlagen.")
                 except asyncio.CancelledError:
-                    logging.info("RADAR: BLE-Scan-Task wurde abgebrochen.")
+                    log.info("BLE-Scan-Task wurde abgebrochen.")
                     ble_identification_result = False
                     ble_identification_task = None
                 except Exception as e:
-                    logging.error(f"RADAR: Fehler im BLE-Scan-Task: {e}", exc_info=True)
+                    log.error(f"Fehler im BLE-Scan-Task: {e}", exc_info=True)
                     ble_identification_result = False
                     ble_identification_task = None
             
             # Aktualisiere last_target_state für den nächsten Schleifendurchlauf
-            logging.debug(f"DEBUG: Loop-Ende: Aktualisiere last_target_state auf x={target.x}, y={target.y}")
+            log.debug(f"Loop-Ende: Aktualisiere last_target_state auf x={target.x}, y={target.y}")
             last_target_state = {'y': target.y, 'x': target.x, 'angle': target.angle, 'speed': target.speed}
             
             await asyncio.sleep(RADAR_LOOP_DELAY)
 
     except asyncio.CancelledError:
-        logging.info("RADAR: Radar-Master-Task abgebrochen.")
+        log.info("Radar-Master-Task abgebrochen.")
     except Exception as e:
-        logging.critical(f"RADAR: Kritischer Fehler im Radar-Master-Task: {e}", exc_info=True)
+        log.critical(f"Kritischer Fehler im Radar-Master-Task: {e}", exc_info=True)
     finally:
         if _radar_device:
             await _radar_device.close()
-        logging.info("RADAR: Radar-Master-Task beendet und Radar-Verbindung geschlossen.")
-        
+        log.info("Radar-Master-Task beendet und Radar-Verbindung geschlossen.")

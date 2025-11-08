@@ -14,12 +14,16 @@
 # Modified: October 17, 2025, 14:35 UTC - Leere Targets im Debug-Log unterdrücken.
 # Modified: October 26, 2025, 12:45 UTC - Target-Dekodierung-Ausgabe auf TRACE-Mode umgestellt für bessere Log-Übersicht.
 # Modified: November 02, 2025, 16:55 UTC - Korrektur (Root Cause Fix): self.targets speichert nur noch Targets mit distance > 0.
+# Modified: November 07, 2025, 12:55 UTC - Logging-Refactor: Benannter Logger, DEBUG->TRACE, Präfixe entfernt, gs.TRACE_MODE entfernt.
 
 import aioserial
 import asyncio
 import math
 import logging
 import globals_state as gs
+
+# NEU: Benannter Logger (Phase 2.1)
+log = logging.getLogger(__name__)
 
 class Target:
     def __init__(self, x, y, speed, pixel_distance):
@@ -52,23 +56,23 @@ class RD03D_Async:
         """Initialisiert die UART-Verbindung asynchron."""
         try:
             self.uart = aioserial.AioSerial(self.uart_port, self.BAUDRATE, timeout=0.1)
-            logging.info(f"RD03D_Async: UART-Verbindung zu {self.uart_port} mit {self.BAUDRATE} Baud hergestellt.")
+            log.info(f"UART-Verbindung zu {self.uart_port} mit {self.BAUDRATE} Baud hergestellt.")
             await asyncio.sleep(0.2)
             await self.set_multi_mode_async(multi_mode)
             return True
         except aioserial.SerialException as e:
-            logging.error(f"RD03D_Async: Fehler beim Verbinden mit UART {self.uart_port}: {e}")
+            log.error(f"Fehler beim Verbinden mit UART {self.uart_port}: {e}")
             self.uart = None
             return False
         except Exception as e:
-            logging.error(f"RD03D_Async: Unerwarteter Fehler bei UART-Verbindung: {e}")
+            log.error(f"Unerwarteter Fehler bei UART-Verbindung: {e}")
             self.uart = None
             return False
     
     async def set_multi_mode_async(self, multi_mode=True):
         """Setzt den Radarmodus asynchron: True=Multi-target, False=Single-target."""
         if not self.uart:
-            logging.warning("RD03D_Async: UART nicht verbunden. Kann Modus nicht setzen.")
+            log.warning("UART nicht verbunden. Kann Modus nicht setzen.")
             return
 
         cmd = self.MULTI_TARGET_CMD if multi_mode else self.SINGLE_TARGET_CMD
@@ -78,9 +82,9 @@ class RD03D_Async:
             self.uart.reset_input_buffer() 
             self.buffer = b''
             self.multi_mode = multi_mode # Speichert den tatsächlich gesetzten Modus
-            logging.info(f"RD03D_Async: Radar-Modus auf {'Multi-Target' if multi_mode else 'Single-Target'} gesetzt.")
+            log.info(f"Radar-Modus auf {'Multi-Target' if multi_mode else 'Single-Target'} gesetzt.")
         except Exception as e:
-            logging.error(f"RD03D_Async: Fehler beim Setzen des Radar-Modus: {e}")
+            log.error(f"Fehler beim Setzen des Radar-Modus: {e}")
     
     @staticmethod
     def parse_signed16(high, low):
@@ -94,7 +98,7 @@ class RD03D_Async:
         expected_len = 30 
 
         if len(data) < expected_len or data[0] != 0xAA or data[1] != 0xFF or data[-2] != 0x55 or data[-1] != 0xCC:
-            logging.debug(f"RD03D_Async: _decode_frame: Invalid frame format or length {len(data)} (expected {expected_len}). Data: {data.hex()}")
+            log.trace(f"_decode_frame: Invalid frame format or length {len(data)} (expected {expected_len}). Data: {data.hex()}")
             return targets
         
         num_targets_in_frame = 3 
@@ -116,27 +120,27 @@ class RD03D_Async:
         for i in range(len(data) - 1):
             if data[i] == 0xAA and data[i+1] == 0xFF:
                 start_idx = i
-                logging.debug(f"RD03D_Async: _find_complete_frame: Start-Marker gefunden bei Index {start_idx}.")
+                log.trace(f"_find_complete_frame: Start-Marker gefunden bei Index {start_idx}.")
                 break
         
         if start_idx == -1:
-            logging.debug("RD03D_Async: _find_complete_frame: Kein Frame-Start gefunden.")
+            log.trace("_find_complete_frame: Kein Frame-Start gefunden.")
             return None, data  # Kein Frame-Start gefunden, alle Daten behalten
         
         if start_idx + expected_frame_len <= len(data):
             if data[start_idx + expected_frame_len - 2] == 0x55 and data[start_idx + expected_frame_len - 1] == 0xCC:
                 frame = data[start_idx : start_idx + expected_frame_len]
                 remaining = data[start_idx + expected_frame_len :]
-                logging.debug(f"RD03D_Async: _find_complete_frame: Vollständiger Frame gefunden. Länge: {len(frame)}. Remaining: {len(remaining)} bytes.")
+                log.trace(f"_find_complete_frame: Vollständiger Frame gefunden. Länge: {len(frame)}. Remaining: {len(remaining)} bytes.")
                 return frame, remaining
         
-        logging.debug(f"RD03D_Async: _find_complete_frame: Frame-Start bei {start_idx} gefunden, aber kein vollständiger Frame (erwartet {expected_frame_len} Bytes) oder kein Ende.")
+        log.trace(f"_find_complete_frame: Frame-Start bei {start_idx} gefunden, aber kein vollständiger Frame (erwartet {expected_frame_len} Bytes) oder kein Ende.")
         return None, data[start_idx:]
     
     async def update_async(self):
         """Aktualisiert die interne Zielliste mit den neuesten Daten vom Radar asynchron."""
         if not self.uart:
-            logging.warning("RD03D_Async: UART nicht verbunden. Kann keine Daten aktualisieren.")
+            log.warning("UART nicht verbunden. Kann keine Daten aktualisieren.")
             return False
 
         try:
@@ -144,29 +148,29 @@ class RD03D_Async:
             if bytes_to_read > 0:
                 new_data = await self.uart.read_async(bytes_to_read)
                 self.buffer += new_data
-                logging.debug(f"RD03D_Async: update_async: {len(new_data)} neue Bytes gelesen. Puffergröße: {len(self.buffer)}. Neue Daten: {new_data.hex()}")
+                log.trace(f"update_async: {len(new_data)} neue Bytes gelesen. Puffergröße: {len(self.buffer)}. Neue Daten: {new_data.hex()}")
             else:
-                logging.debug("RD03D_Async: update_async: Keine neuen Bytes verfügbar.")
+                log.trace("update_async: Keine neuen Bytes verfügbar.")
         except Exception as e:
-            logging.error(f"RD03D_Async: Fehler beim Lesen von UART-Daten: {e}")
+            log.error(f"Fehler beim Lesen von UART-Daten: {e}")
             return False
         
         if len(self.buffer) > 300:
-            logging.debug(f"RD03D_Async: update_async: Puffer zu groß ({len(self.buffer)} Bytes). Kürze auf 150 Bytes.")
+            log.trace(f"update_async: Puffer zu groß ({len(self.buffer)} Bytes). Kürze auf 150 Bytes.")
             self.buffer = self.buffer[-150:]
 
         latest_frame = None
         temp_buffer = self.buffer
         
-        logging.debug(f"RD03D_Async: update_async: Starte Frame-Parsing. Aktueller Puffer: {self.buffer.hex()}")
+        log.trace(f"update_async: Starte Frame-Parsing. Aktueller Puffer: {self.buffer.hex()}")
 
         while True:
             frame, temp_buffer = self._find_complete_frame(temp_buffer)
             if frame:
                 latest_frame = frame
-                logging.debug(f"RD03D_Async: update_async: Vollständigen Frame gefunden. Puffer nach diesem Frame: {temp_buffer.hex()}")
+                log.trace(f"update_async: Vollständigen Frame gefunden. Puffer nach diesem Frame: {temp_buffer.hex()}")
             else:
-                logging.debug("RD03D_Async: update_async: Keine weiteren vollständigen Frames gefunden.")
+                log.trace("update_async: Keine weiteren vollständigen Frames gefunden.")
                 break
         
         if latest_frame:
@@ -174,24 +178,24 @@ class RD03D_Async:
             frame_start_index = self.buffer.rfind(latest_frame)
             if frame_start_index != -1:
                 self.buffer = self.buffer[frame_start_index + len(latest_frame):]
-                logging.debug(f"RD03D_Async: update_async: Puffer nach Bereinigung (Start des letzten Frames): {self.buffer.hex()}")
+                log.trace(f"update_async: Puffer nach Bereinigung (Start des letzten Frames): {self.buffer.hex()}")
             else:
-                logging.warning("RD03D_Async: update_async: latest_frame nicht im Puffer gefunden, Puffer wird geleert.")
+                log.warning("update_async: latest_frame nicht im Puffer gefunden, Puffer wird geleert.")
                 self.buffer = b''
             
             decoded = self._decode_frame(latest_frame)
             if decoded:
                 # KORREKTUR: Filtere leere Targets für das Debug-Log
                 filtered_targets = [str(t) for t in decoded if t.distance > 0]
-                if gs.TRACE_MODE:
-                    logging.info(f"TRACE: Targets dekodiert: {filtered_targets}")
-                logging.debug(f"RD03D_Async: update_async: Targets erfolgreich dekodiert: {filtered_targets}")
+                
+                # NEU (Konsolidiert auf log.trace):
+                log.trace(f"Targets erfolgreich dekodiert: {filtered_targets}")
                 
                 # KORRIGIERTE ZEILE (wie besprochen): Speichere nur Targets, die keine Artefakte (distance=0) sind
                 self.targets = [t for t in decoded if t.distance > 0]
                 return True
         
-        logging.debug("RD03D_Async: update_async: Kein gültiger Frame gefunden oder dekodiert.")
+        log.trace("update_async: Kein gültiger Frame gefunden oder dekodiert.")
         return False
     
     def get_target(self, target_number=1):
@@ -205,6 +209,6 @@ class RD03D_Async:
         if self.uart and self.uart.is_open:
             try:
                 self.uart.close()
-                logging.info("RD03D_Async: UART-Verbindung geschlossen.")
+                log.info("UART-Verbindung geschlossen.")
             except Exception as e:
-                logging.error(f"RD03D_Async: Fehler beim Schließen der UART-Verbindung: {e}")
+                log.error(f"Fehler beim Schließen der UART-Verbindung: {e}")

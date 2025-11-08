@@ -5,6 +5,7 @@
 # Creation Date: October 16, 2025
 # Modified: October 17, 2025, 11:45 UTC - Korrektur der Fehlerbehandlung und Task-Verwaltung.
 # Modified: October 17, 2025, 12:10 UTC - Korrektur: Sauberes Beenden des Hauptprogramms nach Initialisierungsfehler und Task-Cleanup.
+# Modified: November 07, 2025, 15:05 UTC - Logging-Refactor: Benannter Logger, Präfixe entfernt, redundante Log-Konfig entfernt.
 
 import asyncio
 import multiprocessing
@@ -20,19 +21,23 @@ import sys
 import shutil
 from pathlib import Path
 
+# NEU: Benannter Logger (Phase 3.5)
+log = logging.getLogger(__name__)
+
 # Cache vor dem Start löschen
 def clear_pycache():
     project_dir = Path(__file__).parent
     for pycache in project_dir.rglob('__pycache__'):
         shutil.rmtree(pycache, ignore_errors=True)
-    logging.info("MAIN_R: Bytecode-Cache gelöscht.")
-    
+    log.info("Bytecode-Cache gelöscht.") # Logging-Aufruf angepasst
+
+# HINWEIS: Redundante Konfiguration entfernt, da dies nun von config.py gehandhabt wird.
 
 # --- Haupt-Asynchrone Funktion ---
 async def main():
-    logging.info("MAIN_R: Türöffnungssystem (Radar-Version) gestartet.")
-    #logging.info(f"MAIN_R: System iBeacon UUID: {config.get('system_globals.ibeacon_uuid', config.TARGET_IBEACON_UUID)}")
-    #logging.info(f"MAIN_R: System Eddystone Namespace ID: {config.get('system_globals.eddystone_namespace_id', config.EDDYSTONE_NAMESPACE_ID)}")
+    log.info("Türöffnungssystem (Radar-Version) gestartet.")
+    #log.info(f"System iBeacon UUID: {config.get('system_globals.ibeacon_uuid', config.TARGET_IBEACON_UUID)}")
+    #log.info(f"System Eddystone Namespace ID: {config.get('system_globals.eddystone_namespace_id', config.EDDYSTONE_NAMESPACE_ID)}")
 
     # Variablen für Tasks, um sie im finally-Block referenzieren zu können
     display_task = None
@@ -49,9 +54,9 @@ async def main():
             await display_logic.init_display_hardware()
             # Starte den Display-Manager-Task nur, wenn die Hardware erfolgreich initialisiert wurde
             display_task = asyncio.create_task(display_logic.display_manager_task())
-            logging.info("MAIN_R: Display-Manager-Task gestartet.")
+            log.info("Display-Manager-Task gestartet.")
         except Exception as e:
-            logging.error(f"MAIN_R: Fehler bei der Initialisierung der Display-Hardware: {e}. System läuft ohne Display.", exc_info=True)
+            log.error(f"Fehler bei der Initialisierung der Display-Hardware: {e}. System läuft ohne Display.", exc_info=True)
             # gs.display bleibt None, was vom display_manager_task gehandhabt wird
         
         # Initialisiere Radar-Hardware
@@ -60,7 +65,7 @@ async def main():
         
         # --- Starte den Radar-Master-Task (nur wenn Radar-Hardware erfolgreich initialisiert wurde) ---
         radar_task = asyncio.create_task(radar_logic.radar_master_task())
-        logging.info("MAIN_R: Radar-Master-Task gestartet.")
+        log.info("Radar-Master-Task gestartet.")
 
         # Warte auf das Beenden aller Tasks (sollte im Normalfall nicht passieren, da sie Endlosschleifen sind)
         # Füge nur Tasks hinzu, die auch tatsächlich gestartet wurden
@@ -68,19 +73,19 @@ async def main():
         if tasks_to_gather:
             await asyncio.gather(*tasks_to_gather)
         else:
-            logging.warning("MAIN_R: Keine Haupt-Tasks gestartet. System wird beendet.")
+            log.warning("Keine Haupt-Tasks gestartet. System wird beendet.")
 
     except asyncio.CancelledError:
-        logging.info("MAIN_R: System-Tasks werden beendet (CancelledError).")
+        log.info("System-Tasks werden beendet (CancelledError).")
     except Exception as e:
-        logging.critical(f"MAIN_R: Ein kritischer Fehler im Haupt-Loop oder bei der Initialisierung ist aufgetreten: {e}. System wird beendet.", exc_info=True)
+        log.critical(f"Ein kritischer Fehler im Haupt-Loop oder bei der Initialisierung ist aufgetreten: {e}. System wird beendet.", exc_info=True)
         # Wenn ein kritischer Fehler auftritt, muss der Event-Loop beendet werden.
         # Hier wird der Fehler geloggt, und der finally-Block kümmert sich um das Aufräumen.
         # WICHTIG: Wenn hier ein Fehler auftritt, muss der Event-Loop beendet werden,
         # damit das Programm nicht hängen bleibt. asyncio.run() wird den Fehler weitergeben.
         raise # Fehler weitergeben, damit asyncio.run() ihn fängt und den Loop beendet
     finally:
-        logging.info("MAIN_R: Starte Cleanup der Asyncio-Tasks...")
+        log.info("Starte Cleanup der Asyncio-Tasks...")
         # Tasks abbrechen, falls sie noch laufen
         if radar_task and not radar_task.done():
             radar_task.cancel()
@@ -93,16 +98,16 @@ async def main():
             if tasks_to_wait_for:
                 # Warten auf die verbleibenden Tasks mit einem Timeout
                 await asyncio.wait_for(asyncio.gather(*tasks_to_wait_for, return_exceptions=True), timeout=5.0)
-            logging.info("MAIN_R: Alle Asyncio-Tasks beendet.")
+            log.info("Alle Asyncio-Tasks beendet.")
         except asyncio.TimeoutError:
-            logging.error("MAIN_R: Timeout beim Warten auf Beendigung der Tasks. Einige Tasks hängen möglicherweise.")
+            log.error("Timeout beim Warten auf Beendigung der Tasks. Einige Tasks hängen möglicherweise.")
         except asyncio.CancelledError:
-            logging.info("MAIN_R: Asyncio-Tasks erfolgreich abgebrochen.")
+            log.info("Asyncio-Tasks erfolgreich abgebrochen.")
         except Exception as e:
-            logging.error(f"MAIN_R: Fehler beim Beenden der Asyncio-Tasks: {e}")
+            log.error(f"Fehler beim Beenden der Asyncio-Tasks: {e}")
 
         # Final cleanup actions (Radar-Verbindung wird im finally-Block von radar_master_task geschlossen)
-        logging.info("MAIN_R: System-Haupt-Loop beendet.")
+        log.info("System-Haupt-Loop beendet.")
 
 # --- Hauptausführung ---
 if __name__ == "__main__":
@@ -112,9 +117,9 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logging.info("MAIN_R: Programm beendet durch Benutzer (Strg+C).")
+        log.info("Programm beendet durch Benutzer (Strg+C).")
     except Exception as e:
-        logging.critical(f"MAIN_R: Ein kritischer Fehler ist aufgetreten: {e}", exc_info=True)
+        log.critical(f"Ein kritischer Fehler ist aufgetreten: {e}", exc_info=True)
     finally:
         # cleanup_gpio() ist mit atexit registriert und wird automatisch aufgerufen.
-        logging.info("MAIN_R: Programm beendet.")
+        log.info("Programm beendet.")

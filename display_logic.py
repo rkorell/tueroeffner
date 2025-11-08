@@ -4,6 +4,7 @@
 # Creation Date: October 13, 2025
 # Modified: October 13, 2025, 12:30 UTC - Erstellung des display_logic-Moduls mit init_display_hardware.
 # Modified: October 26, 2025, 14:30 UTC - Test-Display-Integration: Conditional import von test_display und Abfrage von display_test_queue für Progressbar-Visualisierung im Testmodus.
+# Modified: November 07, 2025, 14:31 UTC - Logging-Refactor: Benannter Logger, Präfixe entfernt.
 
 import asyncio
 import time
@@ -12,6 +13,7 @@ import logging
 import datetime
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import requests
+import json # Import hinzugefügt, da es in einer Exception verwendet wird (Z. 84)
 
 # Display Imports
 import board
@@ -21,6 +23,9 @@ import adafruit_sharpmemorydisplay
 
 import config
 import globals_state as gs
+
+# NEU: Benannter Logger (Phase 3.3)
+log = logging.getLogger(__name__)
 
 # Conditional import für Test-Modus
 test_display = None
@@ -37,24 +42,24 @@ def degrees_to_cardinal(degrees):
 async def get_weather_data_async():
     
     #if time.time() - gs.last_pws_query_time < config.get("system_globals.weather_config.query_interval_sec", config.PWS_QUERY_INTERVAL_SEC):
-     #   logging.info("DISP: Wetterdaten-Abfrageintervall noch nicht erreicht. Verwende letzte Daten aus Cache.")
+     #   log.info("Wetterdaten-Abfrageintervall noch nicht erreicht. Verwende letzte Daten aus Cache.")
       #  return gs.last_successful_weather_data
 
     try:
         query_url = config.get("system_globals.weather_config.query_url", config.PWS_QUERY_URL)
         if not query_url:
-            logging.error("DISP: Wetter-Abfrage-URL ist leer. Kann keine Wetterdaten abrufen. Verwende Cache.")
+            log.error("Wetter-Abfrage-URL ist leer. Kann keine Wetterdaten abrufen. Verwende Cache.")
             gs.last_successful_weather_data["is_cached"] = True
             return gs.last_successful_weather_data
 
-        #logging.info("DISP: Frage Wetterdaten ab...")
+        #log.info("Frage Wetterdaten ab...")
         response = await asyncio.to_thread(requests.get, query_url, timeout=10)
         response.raise_for_status()
         data = response.json()
 
         obs = data.get("observations", [])
         if not obs:
-            logging.warning("DISP: Keine Beobachtungen in den Wetterdaten gefunden. Verwende Cache.")
+            log.warning("Keine Beobachtungen in den Wetterdaten gefunden. Verwende Cache.")
             gs.last_successful_weather_data["is_cached"] = True
             return gs.last_successful_weather_data
 
@@ -70,22 +75,19 @@ async def get_weather_data_async():
         }
         #gs.last_pws_query_time = time.time()
         gs.last_successful_weather_data = weather_info
-        logging.info("DISP: Wetterdaten erfolgreich abgerufen")
+        log.info("Wetterdaten erfolgreich abgerufen")
         return weather_info
 
     except requests.exceptions.RequestException as e:
-        logging.error(f"DISP: Fehler bei der Wetterdaten-Abfrage: {e}. Verwende Cache.")
+        log.error(f"Fehler bei der Wetterdaten-Abfrage: {e}. Verwende Cache.")
         gs.last_successful_weather_data["is_cached"] = True
         return gs.last_successful_weather_data
-    except json.JSONDecodeError as e: # json ist hier nicht importiert, aber im Originalskript war es.
-                                      # Da es hier nicht direkt verwendet wird (requests.json() parst schon),
-                                      # lasse ich den Import hier weg, um Codetreue zu wahren.
-                                      # Wenn requests.json() einen Fehler wirft, fängt es die allgemeine Exception.
-        logging.error(f"DISP: Fehler beim Parsen der Wetterdaten (JSON): {e}. Verwende Cache.")
+    except json.JSONDecodeError as e: 
+        log.error(f"Fehler beim Parsen der Wetterdaten (JSON): {e}. Verwende Cache.")
         gs.last_successful_weather_data["is_cached"] = True
         return gs.last_successful_weather_data
     except Exception as e:
-        logging.error(f"DISP: Ein unerwarteter Fehler bei der Wetterdaten-Abfrage ist aufgetreten: {e}. Verwende Cache.")
+        log.error(f"Ein unerwarteter Fehler bei der Wetterdaten-Abfrage ist aufgetreten: {e}. Verwende Cache.")
         gs.last_successful_weather_data["is_cached"] = True
         return gs.last_successful_weather_data
 
@@ -118,15 +120,15 @@ def load_icons():
         gs.ICON_KEY = prepare_black_icon_for_sharp_display(key_path, config.ICON_DIMENSIONS)
         gs.ICON_WIND = prepare_black_icon_for_sharp_display(wind_path, config.WEATHER_ICON_SIZE)
         gs.ICON_RAIN = prepare_black_icon_for_sharp_display(rain_path, config.WEATHER_ICON_SIZE)
-        logging.info(f"DISP: Icons geladen und skaliert.")
+        log.info(f"Icons geladen und skaliert.")
 
     except FileNotFoundError as e:
-        logging.error(f"DISP: FEHLER: Icon-Datei nicht gefunden: {e}. Icons werden nicht angezeigt.")
+        log.error(f"FEHLER: Icon-Datei nicht gefunden: {e}. Icons werden nicht angezeigt.")
         gs.ICON_KEY = None
         gs.ICON_WIND = None
         gs.ICON_RAIN = None
     except Exception as e:
-        logging.error(f"DISP: FEHLER beim Laden oder Skalieren der Icons: {e}. Icons werden nicht angezeigt.")
+        log.error(f"FEHLER beim Laden oder Skalieren der Icons: {e}. Icons werden nicht angezeigt.")
         gs.ICON_KEY = None
         gs.ICON_WIND = None
         gs.ICON_RAIN = None
@@ -142,8 +144,8 @@ def load_font_robust(size, default_font=None):
             try:
                 return ImageFont.truetype(path, size)
             except IOError:
-                logging.warning(f"DISP: Konnte Schriftart {path} nicht laden. Versuche nächste.")
-    logging.error("DISP: Keine der bevorzugten Schriftarten gefunden oder geladen. Verwende Standard-Font.")
+                log.warning(f"Konnte Schriftart {path} nicht laden. Versuche nächste.")
+    log.error("Keine der bevorzugten Schriftarten gefunden oder geladen. Verwende Standard-Font.")
     return default_font if default_font else ImageFont.load_default()
 
 def draw_display_content(draw, weather_data, status_icon_type=None):
@@ -229,19 +231,19 @@ def draw_display_content(draw, weather_data, status_icon_type=None):
         draw.bitmap((x_pos, y_pos), icon_to_draw, fill=BLACK)
 
 def toggle_extcomin():
-    logging.info("DISP: Starte manuelles EXTCOMIN Toggling.")
+    log.info("Starte manuelles EXTCOMIN Toggling.")
     while gs.extcomin_running:
         if gs.extcomin is not None:
             gs.extcomin.value = not gs.extcomin.value
         time.sleep(0.5)
-    logging.info("DISP: EXTCOMIN Toggling beendet.")
+    log.info("EXTCOMIN Toggling beendet.")
 
 async def init_display_hardware():
     """
     Initialisiert die Display-Hardware und lädt Icons/Fonts.
     Speichert alle initialisierten Objekte in globals_state.
     """
-    logging.info("DISP: Initialisiere Display-Hardware...")
+    log.info("Initialisiere Display-Hardware...")
     load_icons()
 
     # Fonts laden und in globals_state speichern
@@ -249,7 +251,7 @@ async def init_display_hardware():
     gs.FONT_TIME_DATE = load_font_robust(24)
     gs.FONT_WEATHER_TEMP_BIG = load_font_robust(42)
     gs.FONT_WEATHER_DETAIL = load_font_robust(22)
-    logging.info("DISP: Fonts geladen.")
+    log.info("Fonts geladen.")
 
     spi = busio.SPI(board.SCK, MOSI=board.MOSI)
     
@@ -266,16 +268,16 @@ async def init_display_hardware():
 
     gs.extcomin_running = True
     gs.extcomin_thread_task = asyncio.create_task(asyncio.to_thread(toggle_extcomin))
-    logging.info("DISP: EXTCOMIN Toggling Task gestartet.")
+    log.info("EXTCOMIN Toggling Task gestartet.")
     await asyncio.sleep(0.1) # Kurze Pause, um den Task zu starten
 
     try:
         gs.display = adafruit_sharpmemorydisplay.SharpMemoryDisplay(
             spi, gs.cs, config.DISPLAY_WIDTH, config.DISPLAY_HEIGHT
         )
-        logging.info("DISP: Adafruit Sharp Memory Display initialisiert.")
+        log.info("Adafruit Sharp Memory Display initialisiert.")
     except Exception as e:
-        logging.critical(f"DISP: FEHLER beim Initialisieren des Sharp Memory Displays: {e}", exc_info=True)
+        log.critical(f"FEHLER beim Initialisieren des Sharp Memory Displays: {e}", exc_info=True)
         # Setze display auf None, damit der display_manager_task weiß, dass es nicht funktioniert hat
         gs.display = None
         # Breche den extcomin_thread_task ab, wenn das Display nicht initialisiert werden konnte
@@ -295,7 +297,7 @@ async def display_manager_task():
     WHITE = 255
 
     if gs.display is None:
-        logging.error("DISP: Display-Manager kann nicht gestartet werden, da Display-Hardware nicht initialisiert wurde.")
+        log.error("Display-Manager kann nicht gestartet werden, da Display-Hardware nicht initialisiert wurde.")
         return
 
     try:
@@ -324,13 +326,13 @@ async def display_manager_task():
                 if message["type"] == "status":
                     current_display_status_icon = message["value"]
                     status_icon_display_until = current_time + message.get("duration", 0)
-                    logging.info(f"DISP: Status-Update: {current_display_status_icon} für {message.get('duration', 0)}s")
+                    log.info(f"Status-Update: {current_display_status_icon} für {message.get('duration', 0)}s")
             except asyncio.QueueEmpty:
                 pass
 
             if current_display_status_icon and current_time > status_icon_display_until:
                 current_display_status_icon = None
-                logging.info("DISP: Status-Icon ausgeblendet.")
+                log.info("Status-Icon ausgeblendet.")
             
             # Test-Display: Queue abfragen
             if gs.TEST_DISPLAY_MODE:
@@ -353,9 +355,9 @@ async def display_manager_task():
             await asyncio.sleep(0.5)
 
     except asyncio.CancelledError:
-        logging.info("DISP: Display-Manager-Task abgebrochen.")
+        log.info("Display-Manager-Task abgebrochen.")
     except Exception as e:
-        logging.error(f"DISP: Ein unerwarteter Fehler im Display-Manager ist aufgetreten: {e}", exc_info=True)
+        log.error(f"Ein unerwarteter Fehler im Display-Manager ist aufgetreten: {e}", exc_info=True)
     finally:
         gs.extcomin_running = False
         if gs.extcomin_thread_task:
@@ -364,24 +366,24 @@ async def display_manager_task():
                 await gs.extcomin_thread_task
             except asyncio.CancelledError:
                 pass
-        logging.info("DISP: EXTCOMIN Toggling Task beendet.")
+        log.info("EXTCOMIN Toggling Task beendet.")
 
         if gs.display is not None:
             try:
                 gs.display.fill(1) # Display löschen (weiß)
                 gs.display.show()
-                logging.info("DISP: Adafruit Sharp Display gelöscht.")
+                log.info("Adafruit Sharp Display gelöscht.")
                 await asyncio.sleep(0.5)
             except Exception as e:
-                logging.error(f"DISP: Fehler beim Löschen des Displays: {e}")
+                log.error(f"Fehler beim Löschen des Displays: {e}")
         
         if gs.cs is not None:
             gs.cs.deinit()
-            logging.info("DISP: CS Pin deinitialisiert.")
+            log.info("CS Pin deinitialisiert.")
         if gs.extcomin is not None:
             gs.extcomin.deinit()
-            logging.info("DISP: EXTCOMIN Pin deinitialisiert.")
+            log.info("EXTCOMIN Pin deinitialisiert.")
         if gs.disp is not None:
             gs.disp.deinit()
-            logging.info("DISP: DISP Pin deinitialisiert.")
-        logging.info("DISP: Display-Manager beendet und GPIOs deinitialisiert.")
+            log.info("DISP Pin deinitialisiert.")
+        log.info("Display-Manager beendet und GPIOs deinitialisiert.")
