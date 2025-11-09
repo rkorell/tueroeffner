@@ -15,6 +15,7 @@
 # Modified: October 26, 2025, 12:45 UTC - Target-Dekodierung-Ausgabe auf TRACE-Mode umgestellt für bessere Log-Übersicht.
 # Modified: November 02, 2025, 16:55 UTC - Korrektur (Root Cause Fix): self.targets speichert nur noch Targets mit distance > 0.
 # Modified: November 07, 2025, 12:55 UTC - Logging-Refactor: Benannter Logger, DEBUG->TRACE, Präfixe entfernt, gs.TRACE_MODE entfernt.
+# Modified: November 08, 2025, 15:59 UTC - connect() Default auf multi_mode=False geändert.
 
 import aioserial
 import asyncio
@@ -52,7 +53,7 @@ class RD03D_Async:
         self.buffer = b''
         self.multi_mode = False # Speichert den Modus, in den der Sensor versetzt wurde
     
-    async def connect(self, multi_mode=True):
+    async def connect(self, multi_mode=False): # NEU: Default auf False geändert
         """Initialisiert die UART-Verbindung asynchron."""
         try:
             self.uart = aioserial.AioSerial(self.uart_port, self.BAUDRATE, timeout=0.1)

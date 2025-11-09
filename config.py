@@ -6,6 +6,7 @@
 # Modified: November 07, 2025, 11:38 UTC - Implementierung TRACE-Level (5), Anpassung der Lade-Logik und Erweiterung Log-Format um [%(name)s].
 # Modified: November 07, 2025, 12:11 UTC - Konstante TRACE_LEVEL in Logging-Config-Block verschoben.
 # Modified: November 08, 2025, 11:10 UTC - CODESEND_CODE_BASIS in 'private_config.py' ausgelagert (Sicherheit).
+# Modified: November 08, 2025, 12:13 UTC - Reparatur Log-Spam: Root-Logger auf WARNING, unsere Module auf JSON-Level gesetzt.
 
 import os
 import json
@@ -170,19 +171,33 @@ SYSTEM_CONFIG = read_system_config()
 _temp_handlers = [logging.StreamHandler()]
 _temp_format = '%(asctime)s - [%(name)s] - %(levelname)s - %(message)s'
 
+# --- NEU: Reparierte Logging-Konfiguration ---
+# Definiere unsere 8 Module, die wir kontrollieren wollen
+# (Das Hauptskript wird als '__main__' geloggt)
+OUR_MODULES = [
+    "__main__", 
+    "config", 
+    "ble_logic_R", 
+    "display_logic", 
+    "door_control", 
+    "globals_state", 
+    "radar_logic", 
+    "rd03d_async"
+    "ld2450_async"
+]
+
 if SYSTEM_CONFIG:
     # Logging konfigurieren
     logging_config = SYSTEM_CONFIG.get("system_globals", {}).get("logging_config", {})
     log_level_str = logging_config.get("level", "INFO").upper()
     
-    # --- NEU: Angepasste Log-Level-Erkennung für TRACE ---
+    # Angepasste Log-Level-Erkennung für TRACE
     log_level = logging.INFO # Default
     if log_level_str == "TRACE":
         log_level = TRACE_LEVEL
     else:
         # Standard-Weg für DEBUG, INFO, WARNING, etc.
         log_level = getattr(logging, log_level_str, logging.INFO)
-    # --- ENDE NEU ---
     
     # Vorhandene Handler entfernen, um Neukonfiguration zu ermöglichen
     for handler in logging.root.handlers[:]:
@@ -193,20 +208,23 @@ if SYSTEM_CONFIG:
         log_file_path = logging_config.get("file_path", "tuer_oeffner.log")
         handlers.append(logging.FileHandler(log_file_path))
 
+    # 1. Konfiguriere den ROOT-Logger (für Bibliotheken wie bleak, PIL) auf WARNING
     logging.basicConfig(
-        level=log_level,
-        # --- NEU: Angepasstes Log-Format mit [%(name)s] ---
+        level=logging.WARNING, # <-- REPARATUR: Root ist auf WARNING
         format='%(asctime)s - [%(name)s] - %(levelname)s - %(message)s',
-        # --- ENDE NEU ---
         handlers=handlers
     )
     
+    # 2. Setze das Level für NUR UNSERE Module auf den Wert aus der JSON
+    for module_name in OUR_MODULES:
+        logging.getLogger(module_name).setLevel(log_level)
+
     # Hole einen Logger, NACHDEM basicConfig aufgerufen wurde
     log = logging.getLogger(__name__) # __name__ ist 'config'
-    log.info(f"Logging-Level auf {log_level_str} (Wert: {log_level}) gesetzt.")
+    log.info(f"Root-Logging-Level auf WARNING gesetzt.")
+    log.info(f"Logging-Level für {len(OUR_MODULES)} Anwendungs-Module auf {log_level_str} (Wert: {log_level}) gesetzt.")
     if SYSTEM_CONFIG_FILE:
          log.info(f"Systemkonfiguration aus '{SYSTEM_CONFIG_FILE}' geladen.")
-
 
     # PWS_QUERY_URL konstruieren
     pws_config = SYSTEM_CONFIG.get("system_globals", {}).get("weather_config", {})
@@ -225,3 +243,5 @@ else:
     )
     log = logging.getLogger(__name__)
     log.critical("SYSTEM_CONFIG konnte nicht geladen werden. System wird mit Default-Spezifikationen oder unvollständiger Konfiguration laufen.")
+
+# --- ENDE REPARATUR ---
