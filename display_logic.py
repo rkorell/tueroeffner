@@ -5,6 +5,7 @@
 # Modified: October 13, 2025, 12:30 UTC - Erstellung des display_logic-Moduls mit init_display_hardware.
 # Modified: October 26, 2025, 14:30 UTC - Test-Display-Integration: Conditional import von test_display und Abfrage von display_test_queue für Progressbar-Visualisierung im Testmodus.
 # Modified: November 07, 2025, 14:31 UTC - Logging-Refactor: Benannter Logger, Präfixe entfernt.
+# Modified: November 10, 2025, 16:30 UTC - Test-Display-Modus vollständig entfernt (import, Queue-Handling, Progressbar-Rendering).
 
 import asyncio
 import time
@@ -26,11 +27,6 @@ import globals_state as gs
 
 # NEU: Benannter Logger (Phase 3.3)
 log = logging.getLogger(__name__)
-
-# Conditional import für Test-Modus
-test_display = None
-if gs.TEST_DISPLAY_MODE:
-    import test_display
 
 # --- Display Hilfsfunktionen ---
 def degrees_to_cardinal(degrees):
@@ -308,10 +304,6 @@ async def display_manager_task():
         status_icon_display_until = 0
 
         last_weather_update_time = 0
-        
-        # Test-Display Variablen
-        test_y_distance = None
-        test_x_changed = False
 
         while True:
             current_time = time.time()
@@ -334,20 +326,7 @@ async def display_manager_task():
                 current_display_status_icon = None
                 log.info("Status-Icon ausgeblendet.")
             
-            # Test-Display: Queue abfragen
-            if gs.TEST_DISPLAY_MODE:
-                try:
-                    test_msg = gs.display_test_queue.get_nowait()
-                    test_y_distance = test_msg.get("y_distance")
-                    test_x_changed = test_msg.get("x_sign_changed", False)
-                except asyncio.QueueEmpty:
-                    pass
-            
-            # Zeichnen: Test-Progressbar ODER Standard-Display
-            if gs.TEST_DISPLAY_MODE and test_display is not None and test_y_distance is not None:
-                test_display.draw_test_progressbar(draw, test_y_distance, test_x_changed)
-            else:
-                draw_display_content(draw, weather_data, status_icon_type=current_display_status_icon)
+            draw_display_content(draw, weather_data, status_icon_type=current_display_status_icon)
             
             gs.display.image(image)
             gs.display.show()

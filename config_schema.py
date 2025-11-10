@@ -5,6 +5,9 @@
 # Creation Date: August 18, 2025
 # Modified: October 10, 2025, 13:45 UTC - Added 'initial_scan_duration_sec' parameter to system_globals.
 # Modified: October 16, 2025, 13:00 UTC - Added 'radar_config' parameters.
+# Modified: November 10, 2025, 17:00 UTC - Config-Leichen entfernt: 10 ungenutzte BLE-Scanner-Variablen aus system_globals gelöscht.
+# Modified: November 10, 2025, 17:30 UTC - Magic Numbers ausgelagert: 4 neue Felder in radar_config (history_size, sign_change_y_max, sign_change_x_max, radar_loop_delay).
+# Modified: November 10, 2025, 18:00 UTC - Config-Leiche entfernt: min_distance_to_sensor aus radar_config gelöscht (ungenutzt).
 
 CONFIG_SCHEMA = {
     "system_globals": {
@@ -28,68 +31,6 @@ CONFIG_SCHEMA = {
                 "pattern": "^[0-9A-Fa-f]{20}$",
                 "pattern_description": "Muss eine 20-stellige Hexadezimalzahl sein."
             },
-            "ble_scan_interval_sec": {
-                "label": "BLE Scan Intervall (Sekunden)",
-                "description": "Definiert, wie oft der BLE-Scanner nach Beacons sucht. Ein kleinerer Wert erhöht die Reaktionszeit, kann aber die CPU-Auslastung erhöhen.",
-                "type": "number",
-                "min": 0.1,
-                "max": 10.0,
-                "step": 0.1,
-                "unit": "Sekunden"
-            },
-            "identification_timeout_sec": {
-                "label": "Identifikations-Timeout (Sekunden)",
-                "description": "Zeitspanne, nach der ein Beacon als nicht mehr identifiziert gilt, wenn keine weiteren Pakete empfangen werden.",
-                "type": "number",
-                "min": 1.0,
-                "max": 30.0,
-                "step": 0.5,
-                "unit": "Sekunden"
-            },
-            "proximity_distance_threshold": {
-                "label": "Nähesschwelle (Meter)",
-                "description": "Geschätzte Distanz in Metern, innerhalb derer ein Beacon als 'nah genug' für die Anwesenheitserkennung gilt. Dies ist eine Schätzung und hängt stark von der Umgebung ab.",
-                "type": "number",
-                "min": 0.5,
-                "max": 10.0,
-                "step": 0.1,
-                "unit": "Meter"
-            },
-            "presence_detection_time": {
-                "label": "Anwesenheits-Erkennungszeit (Sekunden)",
-                "description": "Wie lange ein Beacon kontinuierlich erkannt werden muss, bevor er als 'anwesend' gilt (Debouncing).",
-                "type": "number",
-                "min": 1,
-                "max": 30,
-                "step": 1,
-                "unit": "Sekunden"
-            },
-            "absence_detection_time": {
-                "label": "Abwesenheits-Erkennungszeit (Sekunden)",
-                "description": "Wie lange kein Beacon erkannt werden darf, bevor er als 'abwesend' gilt (Debouncing).",
-                "type": "number",
-                "min": 5,
-                "max": 60,
-                "step": 1,
-                "unit": "Sekunden"
-            },
-            "calibrated_measured_power_global_default": {
-                "label": "Kalibrierte Sendeleistung (dBm)",
-                "description": "Standardwert für die kalibrierte Sendeleistung (Tx Power) eines Beacons in 1 Meter Entfernung. Wird zur Distanzschätzung verwendet. Ein höherer Wert bedeutet stärkere Sendeleistung.",
-                "type": "number",
-                "min": -100,
-                "max": -30,
-                "step": 1,
-                "unit": "dBm"
-            },
-            "path_loss_exponent_global_default": {
-                "label": "Pfadverlust-Exponent",
-                "description": "Standardwert für den Pfadverlust-Exponenten. Beschreibt, wie schnell das Signal mit der Entfernung abnimmt. Typische Werte: 2.0 (freier Raum), 2.5-3.5 (Innenräume).",
-                "type": "number",
-                "min": 1.5,
-                "max": 4.0,
-                "step": 0.1
-            },
             "relay_activation_duration_sec": {
                 "label": "Relais-Aktivierungsdauer (Sekunden)",
                 "description": "Wie lange das Relais aktiviert wird, um die Tür zu öffnen. Dieser Wert wird an 'codesend' übergeben. Muss zwischen 3 und 10 Sekunden liegen.",
@@ -97,33 +38,6 @@ CONFIG_SCHEMA = {
                 "min": 3,
                 "max": 10,
                 "step": 1,
-                "unit": "Sekunden"
-            },
-            "force_beacon_absence_duration_sec": {
-                "label": "Erzwungene Beacon-Abwesenheit (Sekunden)",
-                "description": "Dauer, für die nach einer erfolgreichen Türöffnung eine Beacon-Abwesenheit erzwungen wird, um sofortige Mehrfachauslösungen zu verhindern. Während dieser Zeit wird die Tür nicht erneut geöffnet.",
-                "type": "number",
-                "min": 5,
-                "max": 60,
-                "step": 1,
-                "unit": "Sekunden"
-            },
-            "initial_scan_duration_sec": {
-                "label": "Initialer Scan Dauer (Sekunden)",
-                "description": "Dauer des dedizierten Scans beim Systemstart, um initial festzustellen, welche Beacons im Haus sind. Während dieser Zeit werden Beacons, die nicht erkannt werden, als 'nicht zu Hause' markiert.",
-                "type": "number",
-                "min": 5,
-                "max": 60,
-                "step": 1,
-                "unit": "Sekunden"
-            },
-            "beacon_absence_timeout_for_home_status_sec": {
-                "label": "Beacon-Abwesenheits-Timeout für 'Zu Hause'-Status (Sekunden)",
-                "description": "Zeit in Sekunden, die ein Beacon nicht vom System gesehen werden darf, bevor es als 'nicht mehr zu Hause' gilt. Dies dient dazu, den 'is_currently_inside_house'-Status zurückzusetzen, wenn das System läuft.",
-                "type": "number",
-                "min": 300,
-                "max": 14400,
-                "step": 60,
                 "unit": "Sekunden"
             },
             "min_detection_interval": {
@@ -190,7 +104,7 @@ CONFIG_SCHEMA = {
             }
         }
     },
-    "radar_config": { # NEU: Radar Konfiguration
+    "radar_config": {
         "label": "Radar Konfiguration",
         "description": "Einstellungen für den mmWave Radar Sensor und die Türöffnungslogik.",
         "type": "group",
@@ -225,15 +139,6 @@ CONFIG_SCHEMA = {
                 "type": "select",
                 "options": ["positive", "negative"]
             },
-            "min_distance_to_sensor": {
-                "label": "Min. Abstand zum Sensor",
-                "description": "Minimaler Y-Abstand in mm, den eine Person zum Sensor erreichen muss, um die 'Eintrittsabsicht' zu bestätigen. (z.B. 200mm für direkt am Sensor vorbei).",
-                "type": "number",
-                "min": 50,
-                "max": 1000,
-                "step": 10,
-                "unit": "mm"
-            },
             "door_open_comfort_delay": {
                 "label": "Türöffnungs-Komfortverzögerung",
                 "description": "Optionaler Wartezeitraum in Sekunden nach Erkennung des Türöffnungszeitpunkts, um die Benutzererfahrung zu verbessern (z.B. Tür summer, wenn Hand den Knauf erreicht).",
@@ -250,6 +155,42 @@ CONFIG_SCHEMA = {
                 "min": 1,
                 "max": 30,
                 "step": 1,
+                "unit": "Sekunden"
+            },
+            "history_size": {
+                "label": "Historie-Größe (Frames)",
+                "description": "Anzahl der Radar-Frames für die Trendanalyse. Kleinere Werte = schnellere Reaktion, größere Werte = stabilere Erkennung. Empfohlen: 5-10.",
+                "type": "number",
+                "min": 3,
+                "max": 15,
+                "step": 1,
+                "unit": "Frames"
+            },
+            "sign_change_y_max": {
+                "label": "Max. Y-Distanz für Vorzeichenwechsel (mm)",
+                "description": "Maximale Y-Distanz (Abstand zum Sensor), bis zu der ein X-Vorzeichenwechsel als gültig akzeptiert wird. Filtert Radar-Rauschen bei großen Entfernungen.",
+                "type": "number",
+                "min": 200,
+                "max": 1000,
+                "step": 50,
+                "unit": "mm"
+            },
+            "sign_change_x_max": {
+                "label": "Max. X-Wert für Vorzeichenwechsel (mm)",
+                "description": "Maximaler absoluter X-Wert, bis zu dem ein Vorzeichenwechsel bei X=0 als gültig akzeptiert wird. Filtert seitliche Radar-Messfehler.",
+                "type": "number",
+                "min": 300,
+                "max": 1500,
+                "step": 50,
+                "unit": "mm"
+            },
+            "radar_loop_delay": {
+                "label": "Radar Loop Verzögerung (Sekunden)",
+                "description": "Pause zwischen Radar-Auslesungen im I/O-Task. Kleinere Werte = höhere Polling-Rate, aber mehr CPU-Last. Empfohlen: 0.05 (50ms).",
+                "type": "number",
+                "min": 0.01,
+                "max": 0.2,
+                "step": 0.01,
                 "unit": "Sekunden"
             }
         }

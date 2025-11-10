@@ -7,6 +7,7 @@
 # Modified: November 07, 2025, 12:11 UTC - Konstante TRACE_LEVEL in Logging-Config-Block verschoben.
 # Modified: November 08, 2025, 11:10 UTC - CODESEND_CODE_BASIS in 'private_config.py' ausgelagert (Sicherheit).
 # Modified: November 08, 2025, 12:13 UTC - Reparatur Log-Spam: Root-Logger auf WARNING, unsere Module auf JSON-Level gesetzt.
+# Modified: November 10, 2025, 17:00 UTC - Config-Leichen entfernt: 10 ungenutzte Fallback-Konstanten gelöscht (BLE-Scanner-Ära).
 
 import os
 import json
@@ -45,17 +46,7 @@ SYSTEM_CONFIG_FILE = "system_config.json"
 # System Globals (Initialwerte, die aus der Konfigurationsdatei überschrieben werden)
 TARGET_IBEACON_UUID = ""
 EDDYSTONE_NAMESPACE_ID = ""
-BLE_SCAN_INTERVAL_SEC = 1.0
-IDENTIFICATION_TIMEOUT_SEC = 4.0
-PROXIMITY_DISTANCE_THRESHOLD = 3.0
-PRESENCE_DETECTION_TIME = 3
-ABSENCE_DETECTION_TIME = 10
-CALIBRATED_MEASURED_POWER_GLOBAL_DEFAULT = -77
-PATH_LOSS_EXPONENT_GLOBAL_DEFAULT = 2.5
 RELAY_ACTIVATION_DURATION_SEC = 4
-FORCE_BEACON_ABSENCE_DURATION_SEC = 10
-INITIAL_SCAN_DURATION_SEC = 15
-BEACON_ABSENCE_TIMEOUT_FOR_HOME_STATUS_SEC = 3600
 MIN_DETECTION_INTERVAL = 5 # Cooldown for codesend
 
 # Weather Config (Initialwerte)
@@ -182,7 +173,7 @@ OUR_MODULES = [
     "door_control", 
     "globals_state", 
     "radar_logic", 
-    "rd03d_async"
+    "rd03d_async",
     "ld2450_async"
 ]
 

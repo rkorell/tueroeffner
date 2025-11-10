@@ -19,6 +19,9 @@
 # Modified: November 09, 2025, 13:55 UTC - Großer Umbau: Entkopplung (Queue), explizite State Machine (Enums) & korrigierter BLE-Flow.
 # Modified: November 09, 2025, 13:59 UTC - Korrektur: fehlenden 'field'-Import hinzugefügt.
 # Modified: November 09, 2025, 14:05 UTC - Korrektur: TypeError durch Entfernen von 'await' vor 'get_nowait()'.
+# Modified: November 10, 2025, 16:30 UTC - Test-Display-Update entfernt (gs.display_test_queue.put).
+# Modified: November 10, 2025, 17:15 UTC - Ungenutzte Zuweisung entfernt: gs.last_door_opened_timestamp (Variable existiert nicht mehr).
+# Modified: November 10, 2025, 17:30 UTC - Magic Numbers nach config.json ausgelagert: HISTORY_SIZE, SIGN_CHANGE_Y_MAX, SIGN_CHANGE_X_MAX, RADAR_LOOP_DELAY durch config.get() ersetzt. DIAGNOSTIC_LOG_Y_THRESHOLD entfernt (ungenutzt).
 
 import asyncio
 import time
@@ -59,17 +62,7 @@ else:
 
 
 # --- Hardcoded Konstanten ---
-RADAR_LOOP_DELAY = 0.05  # Sekunden Pause zwischen den Radar-Schleifendurchläufen (I/O-Task)
 BAUDRATE = 256000        # Baudrate für den RD03D Sensor (wird von LD2450 ignoriert, da dort hardcoded)
-
-HISTORY_SIZE = 7         # NEU: Anzahl der Frames für die Trendanalyse (N=7)
-
-# Schwellenwerte für X=0 Vorzeichenwechsel-Validierung (Bleibt erhalten)
-SIGN_CHANGE_Y_MAX = 500  # mm - Maximale Y-Distanz für gültigen Vorzeichenwechsel
-SIGN_CHANGE_X_MAX = 700  # mm - Maximaler |X|-Wert für gültigen Vorzeichenwechsel bei X=0
-
-# NEU: Schwellenwert für Diagnose-Logging (Phase 3.1)
-DIAGNOSTIC_LOG_Y_THRESHOLD = 2200 # mm - Ablehnungen unterhalb dieser Distanz werden als DEBUG geloggt, darüber als TRACE.
 
 # --- Modul-globale Variable für Radar-Instanz ---
 _radar_device: RadarDriverClass = None 
@@ -101,9 +94,9 @@ class _RadarState:
     ble_task: Optional[asyncio.Task] = None
     cooldown_end_time: float = 0.0
     
-    # Die "deque" (Historie) bleibt erhalten
-    history: deque = field(default_factory=lambda: deque(maxlen=HISTORY_SIZE))
-    x_sign_changed: bool = False # Für Test-Display
+    # Die "deque" (Historie) - maxlen wird zur Laufzeit aus config.json gelesen
+    history: deque = field(default_factory=lambda: deque(maxlen=config.get("radar_config.history_size", 7)))
+    x_sign_changed: bool = False
 
 # --- NEU: Globale (modulinterne) Instanzen ---
 _state = _RadarState()              # Die einzige Instanz unseres Zustands
@@ -210,14 +203,18 @@ async def _check_and_trigger_door() -> bool:
     
     log.debug(f"Block B: Vorzeichenwechsel-Check: prev_x={prev_x}, current_x={current_x}, y={current_y}")
     
+    # Lade Schwellenwerte aus Config
+    sign_change_y_max = config.get("radar_config.sign_change_y_max", 500)
+    sign_change_x_max = config.get("radar_config.sign_change_x_max", 700)
+    
     valid_sign_change_detected = False
     
-    # Fall 1: X=0 mit Validierung (Logik 1:1 übernommen)
+    # Fall 1: X=0 mit Validierung
     if current_x == 0:
-        if not (current_y > SIGN_CHANGE_Y_MAX or abs(prev_x) > SIGN_CHANGE_X_MAX):
+        if not (current_y > sign_change_y_max or abs(prev_x) > sign_change_x_max):
             expected_x_sign = config.get("radar_config.expected_x_sign", "negative")
-            if (expected_x_sign == "negative" and prev_x < 0 and prev_x > -SIGN_CHANGE_X_MAX) or \
-               (expected_x_sign == "positive" and prev_x > 0 and prev_x < SIGN_CHANGE_X_MAX):
+            if (expected_x_sign == "negative" and prev_x < 0 and prev_x > -sign_change_x_max) or \
+               (expected_x_sign == "positive" and prev_x > 0 and prev_x < sign_change_x_max):
                 valid_sign_change_detected = True
                 log.info(f"Block B: X-Vorzeichenwechsel erkannt (von {prev_x} zu 0, y={current_y}mm). Türöffnungszeitpunkt erreicht.")
             else:
@@ -225,15 +222,14 @@ async def _check_and_trigger_door() -> bool:
         else:
             log.debug(f"Block B: X=0 verworfen (prev_x={prev_x}, y={current_y}mm). Schwellenwerte überschritten.")
     
-    # Fall 2: Echter +/- Wechsel (Logik 1:1 übernommen)
+    # Fall 2: Echter +/- Wechsel
     elif prev_x * current_x < 0:
         valid_sign_change_detected = True
         log.info(f"Block B: X-Vorzeichenwechsel erkannt (von {prev_x} zu {current_x}, y={current_y}mm). Türöffnungszeitpunkt erreicht.")
     
     if valid_sign_change_detected:
-        _state.x_sign_changed = True # (Für Test-Display)
+        _state.x_sign_changed = True
         
-        # (Restliche Logik 1:1 übernommen)
         comfort_delay = config.get("radar_config.door_open_comfort_delay", 0.5)
         if comfort_delay > 0:
             await asyncio.sleep(comfort_delay)
@@ -242,7 +238,6 @@ async def _check_and_trigger_door() -> bool:
         await door_control.send_door_open_command(relay_duration)
         await gs.display_status_queue.put({"type": "status", "value": "ACCESS_GRANTED", "duration": 5})
         
-        gs.last_door_opened_timestamp = time.time()
         cooldown_duration = config.get("radar_config.cooldown_duration", 3.0)
         _state.cooldown_end_time = time.time() + cooldown_duration
         
@@ -317,14 +312,13 @@ async def radar_reader_task():
                 # dieser Task hier, anstatt die Queue vollzumüllen.
                 # Wir verwerfen alte Frames und legen nur den neuesten rein.
                 if _radar_queue.full():
-                    # KORREKTUR: await entfernt.
                     _radar_queue.get_nowait() # Alten Frame verwerfen
                 await _radar_queue.put(target)
             except asyncio.QueueFull:
                  # Sollte durch die Logik oben nie passieren
                 log.warning("Radar-Queue ist voll, verwerfe Frame.")
             
-            await asyncio.sleep(RADAR_LOOP_DELAY)
+            await asyncio.sleep(config.get("radar_config.radar_loop_delay", 0.05))
     
     except asyncio.CancelledError:
         log.info("Radar Reader Task abgebrochen.")
@@ -378,13 +372,6 @@ async def radar_logic_task():
                 # A. Daten in Historie speichern
                 _state.history.append((current_time, target.x, target.y))
 
-                # B. Test-Display-Update (Logik 1:1 übernommen)
-                if gs.TEST_DISPLAY_MODE:
-                    await gs.display_test_queue.put({
-                        "y_distance": target.y,
-                        "x_sign_changed": _state.x_sign_changed
-                    })
-
                 # C. (Parallel 1) BLE-Logik starten (falls nötig)
                 # Startet, wenn Status UNKNOWN oder FAILED ist UND kein Task bereits läuft
                 if _state.ble_status in (BLEStatus.UNKNOWN, BLEStatus.FAILED) and _state.ble_task is None:
@@ -393,8 +380,9 @@ async def radar_logic_task():
 
                 # D. (Parallel 2) Intent-Logik (Block A) ausführen
                 # Wir brauchen eine volle Historie für eine stabile Trendanalyse
-                if len(_state.history) < HISTORY_SIZE:
-                    log.trace(f"Warte auf volle Historie ({len(_state.history)}/{HISTORY_SIZE} Frames)...")
+                required_history_size = config.get("radar_config.history_size", 7)
+                if len(_state.history) < required_history_size:
+                    log.trace(f"Warte auf volle Historie ({len(_state.history)}/{required_history_size} Frames)...")
                     continue
 
                 # Historie ist voll, Trend analysieren

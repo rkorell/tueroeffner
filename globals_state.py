@@ -6,6 +6,10 @@
 # Modified: October 13, 2025, 12:05 UTC - Erstellung des globals_state-Moduls.
 # Modified: October 26, 2025, 14:00 UTC - TEST_DISPLAY_MODE und display_test_queue für Test-Progressbar hinzugefügt.
 # Modified: November 07, 2025, 14:49 UTC - Logging-Refactor: Benannter Logger, Präfixe entfernt, TRACE_MODE entfernt.
+# Modified: November 10, 2025, 16:30 UTC - Test-Display-Modus vollständig entfernt (TEST_DISPLAY_MODE, display_test_queue).
+# Modified: November 10, 2025, 17:15 UTC - Globale Variablen-Leichen entfernt: beacon_last_seen_data, beacon_is_present, last_door_opened_timestamp (BLE-Scanner-Ära).
+# Modified: November 10, 2025, 18:00 UTC - Kommentar-Leichen entfernt: 4 ungenutzte Felder aus beacon_identification_state Dokumentation gelöscht (BLE-Scanner-Ära).
+# Modified: November 10, 2025, 18:05 UTC - HOTFIX: beacon_identification_state Variable wiederhergestellt (versehentlich gelöscht).
 
 import asyncio
 import time
@@ -17,28 +21,14 @@ from PIL import Image # Für Icon-Variablen
 # NEU: Benannter Logger (Phase 4.1)
 log = logging.getLogger(__name__)
 
-# --- NEU: TRACE_MODE wurde entfernt ---
-TEST_DISPLAY_MODE = False  # Test-Progressbar aktivieren (True = Testmodus, False = Produktivbetrieb)
-
 # --- Globale Status-Queues und Variablen ---
 display_status_queue = asyncio.Queue()
-display_test_queue = asyncio.Queue()  # NEU: Für Test-Progressbar-Daten
-
-# beacon_last_seen_data stores for each Beacon: {'timestamp': time.time(), 'rssi': rssi_val, 'distance': distance}
-# Initialisiert mit float('inf') für Distanz und 0 für timestamp, um "nicht gesehen" zu signalisieren
-beacon_last_seen_data = {} 
-
-beacon_is_present = False # True, wenn mindestens ein relevanter Beacon als "anwesend" gilt (nach Debouncing)
-
-last_door_opened_timestamp = 0 
 
 # Global state to track identification progress for each beacon MAC
 # { "MAC_ADDRESS": { "name": "Beacon Name", "is_allowed": true/false,
 #                    "ibeacon_data": {}, "uid_data": {}, "url_data": "",
 #                    "last_packet_time": float, "is_fully_identified": bool,
-#                    "known_beacon_config": {},
-#                    "is_in_proximity_raw": bool, "proximity_state_change_time": float, "is_in_proximity_debounced": bool,
-#                    "is_currently_inside_house": bool } }
+#                    "known_beacon_config": {} } }
 beacon_identification_state = {} 
 
 # --- Globale Display Instanzen (für cleanup) ---

@@ -1,0 +1,18 @@
+# private_config.py.example
+# Umbenennen zu:  private_config.py
+# mv private_config.py.example private_config.py
+
+# Diese Datei enthält sensible, private Konfigurationen,
+# die nicht in das Git-Repository eingecheckt werden.
+# Sie wird von config.py importiert.
+
+
+# Code für Testbetrieb mit Feuerwerkszünder 2013 (TEST) - immer eins niedriger, als der Empfänger (wegen Berechnung des finalen codes)
+#CODESEND_CODE_BASIS = 1012
+
+
+# Der Basiscode ist:  IHR_GEHEIMER_BASIS_CODE 
+# Mit diesem Code wird für system_config.json.relay_activation_duration_sec": X, sekunden geöffnet
+# durch anpassung der  system_config.json.relay_activation_duration_sec": X erhöht sich die Öffnungszeit
+
+CODESEND_CODE_BASIS = IHR_GEHEIMER_BASIS_CODE # system_config.json.relay_activation_duration_sec  sec
