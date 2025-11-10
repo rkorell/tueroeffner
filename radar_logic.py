@@ -16,12 +16,18 @@
 # Modified: November 07, 2025, 13:25 UTC - Logging-Refactor: Benannter Logger, Präfixe entfernt, _is_approaching_target gibt Reason zurück, distanzabhängiges Diagnose-Logging implementiert.
 # Modified: November 08, 2025, 15:59 UTC - Hardware-Abstraktion (SENSOR_TYPE Variable) und bedingten Import (LD2450/RD03D) eingeführt.
 # Modified: November 08, 2025, 20:57 UTC - Umbau auf Trendanalyse (N-Frame-Historie) statt 2-Punkt-Vergleich zur Behebung des Kalt/Heiß-Drift-Problems. (Entfernt: _is_approaching_target, last_target_state, Y_TOLERANCE_MM, get_sign).
+# Modified: November 09, 2025, 13:55 UTC - Großer Umbau: Entkopplung (Queue), explizite State Machine (Enums) & korrigierter BLE-Flow.
+# Modified: November 09, 2025, 13:59 UTC - Korrektur: fehlenden 'field'-Import hinzugefügt.
+# Modified: November 09, 2025, 14:05 UTC - Korrektur: TypeError durch Entfernen von 'await' vor 'get_nowait()'.
 
 import asyncio
 import time
 import logging
 from collections import deque
 import numpy as np
+from enum import Enum, auto
+from dataclasses import dataclass, field
+from typing import Optional
 
 import config # MUSS vor dem bedingten Import geladen werden (Logging-Init)
 import globals_state as gs
@@ -53,9 +59,8 @@ else:
 
 
 # --- Hardcoded Konstanten ---
-RADAR_LOOP_DELAY = 0.05  # Sekunden Pause zwischen den Radar-Schleifendurchläufen
+RADAR_LOOP_DELAY = 0.05  # Sekunden Pause zwischen den Radar-Schleifendurchläufen (I/O-Task)
 BAUDRATE = 256000        # Baudrate für den RD03D Sensor (wird von LD2450 ignoriert, da dort hardcoded)
-# Y_TOLERANCE_MM = 50    # ENTFERNT (Genehmigt): Wird durch Trendanalyse ersetzt.
 
 HISTORY_SIZE = 7         # NEU: Anzahl der Frames für die Trendanalyse (N=7)
 
@@ -67,26 +72,56 @@ SIGN_CHANGE_X_MAX = 700  # mm - Maximaler |X|-Wert für gültigen Vorzeichenwech
 DIAGNOSTIC_LOG_Y_THRESHOLD = 2200 # mm - Ablehnungen unterhalb dieser Distanz werden als DEBUG geloggt, darüber als TRACE.
 
 # --- Modul-globale Variable für Radar-Instanz ---
-_radar_device: RadarDriverClass = None # NEU: Nutzt den generischen Typ
+_radar_device: RadarDriverClass = None 
 
-# --- ENTFERNT (Genehmigt): get_sign ---
-# def get_sign(x): ...
+# --- NEU: Explizite Zustandsdefinitionen (State Machine) ---
+class SystemState(Enum):
+    IDLE = auto()      # Wartet auf Objekt
+    TRACKING = auto()  # Objekt wird verfolgt, BLE und Intent werden parallel geprüft
+    COOLDOWN = auto()  # Tür wurde geöffnet, System pausiert
+
+class BLEStatus(Enum):
+    UNKNOWN = auto()   # Initialzustand oder nach Reset (wenn Cache verfällt, optional)
+    SCANNING = auto()  # Scan-Task läuft
+    SUCCESS = auto()   # Scan erfolgreich, Person ist autorisiert (gecacht)
+    FAILED = auto()    # Scan fehlgeschlagen (gecacht)
+
+class IntentStatus(Enum):
+    NEUTRAL = auto()   # Zu wenig Daten oder unklare Bewegung
+    KOMMEN = auto()    # Trendanalyse (Block A) signalisiert "Kommen"
+    GEHEN = auto()     # Trendanalyse (Block A) signalisiert "Gehen"
+
+@dataclass
+class _RadarState:
+    """Zentrale Datenstruktur zur Verwaltung des Zustands."""
+    system_state: SystemState = SystemState.IDLE
+    ble_status: BLEStatus = BLEStatus.UNKNOWN
+    intent_status: IntentStatus = IntentStatus.NEUTRAL
+    
+    ble_task: Optional[asyncio.Task] = None
+    cooldown_end_time: float = 0.0
+    
+    # Die "deque" (Historie) bleibt erhalten
+    history: deque = field(default_factory=lambda: deque(maxlen=HISTORY_SIZE))
+    x_sign_changed: bool = False # Für Test-Display
+
+# --- NEU: Globale (modulinterne) Instanzen ---
+_state = _RadarState()              # Die einzige Instanz unseres Zustands
+_radar_queue = asyncio.Queue(maxsize=1) # Pipeline zwischen I/O und Logik
+
 
 async def init_radar_hardware():
     """
     Initialisiert die Radar-Hardware und stellt die Verbindung her.
+    (Funktion 1:1 aus Original übernommen)
     """
     global _radar_device
-    log.info(f"Initialisiere Radar-Hardware (Typ: {SENSOR_TYPE})...") # NEU: Typ im Log
+    log.info(f"Initialisiere Radar-Hardware (Typ: {SENSOR_TYPE})...")
     
     uart_port = config.get("radar_config.uart_port", "/dev/ttyAMA2") 
     
-    # NEU: Verwendet die oben importierte Klasse
     _radar_device = RadarDriverClass(uart_port)
     
-    # NEU: Einheitlicher Aufruf.
-    # RD03D_Async.connect() hat jetzt Default multi_mode=False
-    # LD2450_Async.connect() ignoriert den Parameter und erzwingt Single-Target
     connected = await _radar_device.connect() 
     
     if not connected:
@@ -95,14 +130,13 @@ async def init_radar_hardware():
     
     log.info(f"Radar-Hardware ({SENSOR_TYPE}) erfolgreich initialisiert und im Single-Target-Modus.")
 
-# --- ENTFERNT (Genehmigt): _is_approaching_target ---
-# def _is_approaching_target(target: Target, last_target_state: dict) -> (bool, str): ...
 
 def _analyze_trajectory(history: deque, expected_sign: str, noise_threshold_cm_s: float) -> str:
     """
     Führt eine holistische Trendanalyse (Block A) über die Historie (N Frames) durch.
     Gibt den erkannten Zustand zurück: "COMING", "LEAVING" oder "NEUTRAL".
     Ignoriert den unzuverlässigen gemessenen 'speed'-Wert komplett.
+    (Funktion 1:1 aus Original übernommen)
     """
     
     # 1. Daten für Regression extrahieren
@@ -154,207 +188,266 @@ def _analyze_trajectory(history: deque, expected_sign: str, noise_threshold_cm_s
         return "NEUTRAL"
 
 
-async def radar_master_task():
+async def _check_and_trigger_door() -> bool:
     """
-    Implementiert die Master-Logik (State Machine) basierend auf holistischer Trendanalyse.
+    Prüft auf "akuten" X-Vorzeichenwechsel (Block B) und öffnet die Tür.
+    Nimmt die Logik aus dem alten radar_master_task (Block B).
+    Gibt True zurück, wenn die Tür geöffnet wurde.
     """
-    global _radar_device
+    global _state
+    
+    # Wir brauchen mind. 2 Punkte in der Historie für einen "akuten" Vergleich
+    if len(_state.history) < 2:
+        return False
+            
+    # Hole die letzten beiden Frames für den akuten X-Check
+    current_entry = _state.history[-1] # (time, x, y)
+    prev_entry = _state.history[-2]    # (time, x, y)
+    
+    current_x = current_entry[1]
+    current_y = current_entry[2] # Y-Position des aktuellen Frames
+    prev_x = prev_entry[1]
+    
+    log.debug(f"Block B: Vorzeichenwechsel-Check: prev_x={prev_x}, current_x={current_x}, y={current_y}")
+    
+    valid_sign_change_detected = False
+    
+    # Fall 1: X=0 mit Validierung (Logik 1:1 übernommen)
+    if current_x == 0:
+        if not (current_y > SIGN_CHANGE_Y_MAX or abs(prev_x) > SIGN_CHANGE_X_MAX):
+            expected_x_sign = config.get("radar_config.expected_x_sign", "negative")
+            if (expected_x_sign == "negative" and prev_x < 0 and prev_x > -SIGN_CHANGE_X_MAX) or \
+               (expected_x_sign == "positive" and prev_x > 0 and prev_x < SIGN_CHANGE_X_MAX):
+                valid_sign_change_detected = True
+                log.info(f"Block B: X-Vorzeichenwechsel erkannt (von {prev_x} zu 0, y={current_y}mm). Türöffnungszeitpunkt erreicht.")
+            else:
+                log.debug(f"Block B: X=0 verworfen (prev_x={prev_x}). Falsche Richtung (expected: {expected_x_sign}).")
+        else:
+            log.debug(f"Block B: X=0 verworfen (prev_x={prev_x}, y={current_y}mm). Schwellenwerte überschritten.")
+    
+    # Fall 2: Echter +/- Wechsel (Logik 1:1 übernommen)
+    elif prev_x * current_x < 0:
+        valid_sign_change_detected = True
+        log.info(f"Block B: X-Vorzeichenwechsel erkannt (von {prev_x} zu {current_x}, y={current_y}mm). Türöffnungszeitpunkt erreicht.")
+    
+    if valid_sign_change_detected:
+        _state.x_sign_changed = True # (Für Test-Display)
+        
+        # (Restliche Logik 1:1 übernommen)
+        comfort_delay = config.get("radar_config.door_open_comfort_delay", 0.5)
+        if comfort_delay > 0:
+            await asyncio.sleep(comfort_delay)
+        
+        relay_duration = config.get("system_globals.relay_activation_duration_sec", 4)
+        await door_control.send_door_open_command(relay_duration)
+        await gs.display_status_queue.put({"type": "status", "value": "ACCESS_GRANTED", "duration": 5})
+        
+        gs.last_door_opened_timestamp = time.time()
+        cooldown_duration = config.get("radar_config.cooldown_duration", 3.0)
+        _state.cooldown_end_time = time.time() + cooldown_duration
+        
+        log.info("Block B: Tür geöffnet und Cooldown-Timer gesetzt.")
+        return True
+        
+    return False
+
+
+def _reset_to_idle():
+    """Setzt den Zustand zurück auf IDLE, behält aber den BLE-Status (Caching)."""
+    global _state
+    
+    _state.system_state = SystemState.IDLE
+    _state.intent_status = IntentStatus.NEUTRAL
+    _state.history.clear()
+    _state.x_sign_changed = False
+    
+    # WICHTIG: _state.ble_status wird *nicht* zurückgesetzt (Caching-Prämisse)
+    # WICHTIG: _state.ble_task wird *nicht* abgebrochen (Lasse ihn für Cache-Update zu Ende laufen)
+    
+    log.debug("State Machine Reset zu IDLE (BLE-Status bleibt erhalten).")
+
+
+async def _run_ble_scan_wrapper():
+    """Wrapper für den BLE-Scan-Task, um den globalen Status bei Abschluss zu setzen."""
+    global _state
+    
+    try:
+        ble_scan_max_duration = config.get("radar_config.ble_scan_max_duration", 1.5)
+        log.info(f"Starte BLE-Scan (max. {ble_scan_max_duration}s)...")
+        
+        result = await ble_logic_R.perform_on_demand_identification(ble_scan_max_duration)
+        
+        if result:
+            _state.ble_status = BLEStatus.SUCCESS
+            log.info("BLE-Scan beendet: SUCCESS")
+        else:
+            _state.ble_status = BLEStatus.FAILED
+            log.info("BLE-Scan beendet: FAILED")
+            
+    except asyncio.CancelledError:
+        log.info("BLE-Scan-Wrapper abgebrochen.")
+        # Setze Status auf FAILED, wenn Task extern abgebrochen wird
+        _state.ble_status = BLEStatus.FAILED
+    except Exception as e:
+        log.error(f"Fehler im BLE-Scan-Wrapper: {e}", exc_info=True)
+        _state.ble_status = BLEStatus.FAILED
+    finally:
+        _state.ble_task = None
+
+
+# --- NEU: TASK 1 - Radar I/O (Reader Task) ---
+async def radar_reader_task():
+    """
+    Task 1: Liest Radar-Hardware aus und legt Daten in die Queue.
+    (Ersetzt den Lese-Teil des alten radar_master_task)
+    """
+    global _radar_device, _radar_queue
     if _radar_device is None:
-        log.critical("radar_master_task kann nicht gestartet werden, Radar-Hardware nicht initialisiert.")
+        log.critical("radar_reader_task kann nicht gestartet werden, Radar-Hardware nicht initialisiert.")
         return
 
-    log.info("Starte Radar-Master-Task (Version: Trendanalyse).")
-
-    # --- Interne Zustandsvariablen ---
-    ble_identification_task: asyncio.Task = None
-    ble_identification_result: bool = None
-    # last_target_state: dict = None  # ERSETZT (Genehmigt)
-    cooldown_active_until: float = 0.0
-    x_sign_changed: bool = False  # Für Test-Display
-
-    # NEU: Zustandsvariablen für Trendanalyse
-    # "Rollierende" Historie (speichert Tupel: (timestamp, x, y))
-    target_history = deque(maxlen=HISTORY_SIZE) 
-    # Startzustand der State Machine
-    current_tracking_state = "IDLE" 
-
+    log.info("Starte Radar Reader Task (I/O)...")
     try:
         while True:
-            current_time = time.time()
-
-            # --- Cooldown-Prüfung ---
-            if current_time < cooldown_active_until:
-                await _radar_device.update_async() # Puffer weiterlesen
-                await asyncio.sleep(RADAR_LOOP_DELAY)
-                continue
-
-            # Radardaten lesen
             updated = await _radar_device.update_async()
-            target: Target = _radar_device.get_target(1)
+            target: Target = _radar_device.get_target(1) # Target oder None
             
-            # --- Target Handling ---
-            if target is None:
-                # Target verloren
-                if current_tracking_state != "IDLE":
-                    log.debug(f"Target verloren. Status wechselt zu IDLE. (BLE-Ergebnis: {ble_identification_result} bleibt erhalten)")
-                    current_tracking_state = "IDLE"
-                
-                # HINWEIS: target_history wird *nicht* geleert, damit der "akute" X-Check (Block B)
-                # bei kurzem Jitter (1-2 Frames Verlust) robust bleibt und auf history[-1] zugreifen kann.
-                # (Ein Timer zum Zurücksetzen von ble_identification_result ist hier noch nicht implementiert)
+            try:
+                # maxsize=1: Wenn die Logik (Task 2) hängt, blockiert
+                # dieser Task hier, anstatt die Queue vollzumüllen.
+                # Wir verwerfen alte Frames und legen nur den neuesten rein.
+                if _radar_queue.full():
+                    # KORREKTUR: await entfernt.
+                    _radar_queue.get_nowait() # Alten Frame verwerfen
+                await _radar_queue.put(target)
+            except asyncio.QueueFull:
+                 # Sollte durch die Logik oben nie passieren
+                log.warning("Radar-Queue ist voll, verwerfe Frame.")
             
-            else:
-                # Target vorhanden
-                # Füge Tupel (timestamp, x, y) zur Historie hinzu
-                target_history.append((current_time, target.x, target.y))
-                
-                # Test-Display: Y-Distanz senden (nutze das akute Target)
-                if gs.TEST_DISPLAY_MODE:
-                    await gs.display_test_queue.put({
-                        "y_distance": target.y,
-                        "x_sign_changed": x_sign_changed
-                    })
-
-
-            # --- Block B: Türöffnungs-Trigger (AKUT) ---
-            # (Diese Logik muss VOR Block A bleiben, um sofort auf den X-Wechsel zu reagieren,
-            # auch wenn der Trend-Status noch nicht aktualisiert wurde)
-            if ble_identification_result is True:
-                # Wir brauchen mind. 2 Punkte in der Historie für einen "akuten" Vergleich
-                if len(target_history) >= 2:
-                    
-                    # Hole die letzten beiden Frames für den akuten X-Check
-                    current_entry = target_history[-1] # (time, x, y)
-                    prev_entry = target_history[-2]    # (time, x, y)
-                    
-                    current_x = current_entry[1]
-                    current_y = current_entry[2] # Y-Position des aktuellen Frames
-                    prev_x = prev_entry[1]
-                    
-                    log.debug(f"Vorzeichenwechsel-Check: prev_x={prev_x}, current_x={current_x}, y={current_y}")
-                    
-                    valid_sign_change_detected = False
-                    
-                    # Fall 1: X=0 mit Validierung (Logik 1:1 übernommen)
-                    if current_x == 0:
-                        if not (current_y > SIGN_CHANGE_Y_MAX or abs(prev_x) > SIGN_CHANGE_X_MAX):
-                            expected_x_sign = config.get("radar_config.expected_x_sign", "negative")
-                            if (expected_x_sign == "negative" and prev_x < 0 and prev_x > -SIGN_CHANGE_X_MAX) or \
-                               (expected_x_sign == "positive" and prev_x > 0 and prev_x < SIGN_CHANGE_X_MAX):
-                                valid_sign_change_detected = True
-                                log.info(f"X-Vorzeichenwechsel erkannt (von {prev_x} zu 0, y={current_y}mm). Türöffnungszeitpunkt erreicht.")
-                            else:
-                                log.debug(f"X=0 verworfen (prev_x={prev_x}). Falsche Richtung (expected: {expected_x_sign}).")
-                        else:
-                            log.debug(f"X=0 verworfen (prev_x={prev_x}, y={current_y}mm). Schwellenwerte überschritten.")
-                    
-                    # Fall 2: Echter +/- Wechsel (Logik 1:1 übernommen)
-                    elif prev_x * current_x < 0:
-                        valid_sign_change_detected = True
-                        log.info(f"X-Vorzeichenwechsel erkannt (von {prev_x} zu {current_x}, y={current_y}mm). Türöffnungszeitpunkt erreicht.")
-                    
-                    if valid_sign_change_detected:
-                        x_sign_changed = True # (Für Test-Display)
-                        
-                        # (Restliche Logik 1:1 übernommen)
-                        comfort_delay = config.get("radar_config.door_open_comfort_delay", 0.5)
-                        if comfort_delay > 0:
-                            await asyncio.sleep(comfort_delay)
-                        
-                        relay_duration = config.get("system_globals.relay_activation_duration_sec", 4)
-                        await door_control.send_door_open_command(relay_duration)
-                        await gs.display_status_queue.put({"type": "status", "value": "ACCESS_GRANTED", "duration": 5})
-                        
-                        gs.last_door_opened_timestamp = current_time
-                        cooldown_duration = config.get("radar_config.cooldown_duration", 3.0)
-                        cooldown_active_until = current_time + cooldown_duration
-                        
-                        log.info("Tür geöffnet und Cooldown gestartet.")
-                        
-                        # Zustände für den nächsten Zyklus zurücksetzen
-                        ble_identification_result = None
-                        target_history.clear() # NEU: Historie leeren
-                        current_tracking_state = "IDLE" # NEU: Status zurücksetzen
-                        x_sign_changed = False
-                        
-                        if ble_identification_task and not ble_identification_task.done():
-                            ble_identification_task.cancel()
-                        ble_identification_task = None
-                        
-                        await asyncio.sleep(RADAR_LOOP_DELAY)
-                        continue
-
-
-            # --- Block A: BLE-Scan-Trigger (TRENDANALYSE) ---
-            
-            # Wir benötigen eine volle Historie für eine stabile Trendanalyse
-            if len(target_history) < HISTORY_SIZE:
-                log.trace(f"Warte auf volle Historie ({len(target_history)}/{HISTORY_SIZE} Frames)...")
-                await asyncio.sleep(RADAR_LOOP_DELAY)
-                continue
-
-            # --- Historie ist voll (N=HISTORY_SIZE) ---
-            
-            # 1. Parameter holen
-            noise_threshold = config.get("radar_config.speed_noise_threshold", 5)
-            expected_x_sign = config.get("radar_config.expected_x_sign", "negative")
-
-            # 2. Trend analysieren (Block A)
-            new_state = _analyze_trajectory(target_history, expected_x_sign, noise_threshold)
-
-            # 3. State Machine (Zustandsübergänge)
-            if new_state != "NEUTRAL":
-                # Nur bei echter Bewegungsänderung Status wechseln
-                if new_state != current_tracking_state:
-                    log.info(f"Tracking-Status: {current_tracking_state} -> {new_state}")
-                    current_tracking_state = new_state
-                    
-                    if new_state == "LEAVING":
-                        # Wenn wir "Gehen" erkennen, Scan abbrechen und Ergebnis verwerfen
-                        if ble_identification_task and not ble_identification_task.done():
-                            log.info("Status 'LEAVING' erkannt, breche laufenden BLE-Scan ab.")
-                            ble_identification_task.cancel()
-                        ble_identification_result = None # Wichtig!
-            
-            # 4. Aktionen basierend auf Zustand (BLE-Scan)
-            if current_tracking_state == "COMING":
-                # Nur starten, wenn noch kein Task läuft UND noch kein Ergebnis vorliegt
-                if (ble_identification_task is None) and (ble_identification_result is None):
-                    ble_scan_max_duration = config.get("radar_config.ble_scan_max_duration", 1.5)
-                    ble_identification_task = asyncio.create_task(
-                        ble_logic_R.perform_on_demand_identification(ble_scan_max_duration)
-                    )
-                    log.info("Status 'COMING' erkannt. Starte BLE-Scan im Hintergrund.")
-                
-                # Prüfe, ob der Hintergrund-BLE-Scan abgeschlossen ist
-                if ble_identification_task and ble_identification_task.done():
-                    try:
-                        ble_identification_result = ble_identification_task.result()
-                        ble_identification_task = None
-                        if ble_identification_result:
-                            log.info("BLE-Identifikation erfolgreich.")
-                        else:
-                            log.info("BLE-Identifikation fehlgeschlagen (Timeout oder kein Beacon).")
-                            # Setze Status zurück, damit bei nächster "COMING"-Erkennung neu gescannt wird
-                            current_tracking_state = "IDLE" 
-                    except asyncio.CancelledError:
-                        log.info("BLE-Scan-Task wurde abgebrochen (z.B. durch 'LEAVING').")
-                        ble_identification_result = False
-                        ble_identification_task = None
-                    except Exception as e:
-                        log.error(f"Fehler im BLE-Scan-Task: {e}", exc_info=True)
-                        ble_identification_result = False
-                        ble_identification_task = None
-
-            # --- (Alte Logik für _is_approaching_target und last_target_state ist entfernt) ---
-
             await asyncio.sleep(RADAR_LOOP_DELAY)
-
+    
     except asyncio.CancelledError:
-        log.info("Radar-Master-Task abgebrochen.")
+        log.info("Radar Reader Task abgebrochen.")
     except Exception as e:
-        log.critical(f"Kritischer Fehler im Radar-Master-Task: {e}", exc_info=True)
+        log.critical(f"Kritischer Fehler im Radar Reader Task: {e}", exc_info=True)
     finally:
         if _radar_device:
             await _radar_device.close()
-        log.info("Radar-Master-Task beendet und Radar-Verbindung geschlossen.")
+        log.info("Radar Reader Task beendet und Radar-Verbindung geschlossen.")
+
+
+# --- NEU: TASK 2 - Radar Logik (State Machine) ---
+async def radar_logic_task():
+    """
+    Task 2: Verarbeitet Daten aus der Queue und führt die State Machine aus.
+    (Ersetzt den Logik-Teil des alten radar_master_task)
+    """
+    global _state, _radar_queue
+    log.info("Starte Radar Logic Task (State Machine)...")
+
+    try:
+        while True:
+            # 1. Warte auf nächstes Datenpaket (Target oder None)
+            target = await _radar_queue.get()
+            current_time = time.time()
+
+            # --- Zustand 1: COOLDOWN ---
+            if _state.system_state == SystemState.COOLDOWN:
+                if current_time > _state.cooldown_end_time:
+                    log.info("Cooldown beendet.")
+                    _reset_to_idle()
+                continue # Ignoriere alle Radar-Daten während Cooldown
+
+            # --- Target-Handling ---
+            if target is None:
+                # Target verloren
+                if _state.system_state == SystemState.TRACKING:
+                    log.debug("Target verloren. Reset zu IDLE.")
+                    _reset_to_idle()
+                continue
+
+            # --- Zustand 2: IDLE (und Target ist vorhanden) ---
+            if _state.system_state == SystemState.IDLE:
+                _state.system_state = SystemState.TRACKING
+                log.info("Objekt erkannt. Wechsle zu TRACKING.")
+                # (History wird bei Reset geleert, fängt hier neu an)
+
+            # --- Zustand 3: TRACKING ---
+            if _state.system_state == SystemState.TRACKING:
+                
+                # A. Daten in Historie speichern
+                _state.history.append((current_time, target.x, target.y))
+
+                # B. Test-Display-Update (Logik 1:1 übernommen)
+                if gs.TEST_DISPLAY_MODE:
+                    await gs.display_test_queue.put({
+                        "y_distance": target.y,
+                        "x_sign_changed": _state.x_sign_changed
+                    })
+
+                # C. (Parallel 1) BLE-Logik starten (falls nötig)
+                # Startet, wenn Status UNKNOWN oder FAILED ist UND kein Task bereits läuft
+                if _state.ble_status in (BLEStatus.UNKNOWN, BLEStatus.FAILED) and _state.ble_task is None:
+                    _state.ble_status = BLEStatus.SCANNING
+                    _state.ble_task = asyncio.create_task(_run_ble_scan_wrapper())
+
+                # D. (Parallel 2) Intent-Logik (Block A) ausführen
+                # Wir brauchen eine volle Historie für eine stabile Trendanalyse
+                if len(_state.history) < HISTORY_SIZE:
+                    log.trace(f"Warte auf volle Historie ({len(_state.history)}/{HISTORY_SIZE} Frames)...")
+                    continue
+
+                # Historie ist voll, Trend analysieren
+                noise_threshold = config.get("radar_config.speed_noise_threshold", 5)
+                expected_x_sign = config.get("radar_config.expected_x_sign", "negative")
+                
+                trend_str = _analyze_trajectory(_state.history, expected_x_sign, noise_threshold)
+
+                # Intent-Status aktualisieren
+                new_intent = IntentStatus.NEUTRAL
+                if trend_str == "COMING":
+                    new_intent = IntentStatus.KOMMEN
+                elif trend_str == "LEAVING":
+                    new_intent = IntentStatus.GEHEN
+                
+                if _state.intent_status != new_intent and new_intent != IntentStatus.NEUTRAL:
+                    log.info(f"Intent-Status: {_state.intent_status.name} -> {new_intent.name}")
+                    _state.intent_status = new_intent
+
+                # E. Reset-Bedingungen (Intent = GEHEN)
+                if _state.intent_status == IntentStatus.GEHEN:
+                    log.info("Intent 'GEHEN' erkannt (NICHT ÖFFNEN FALL 2). Reset zu IDLE.")
+                    _reset_to_idle()
+                    continue
+
+                # F. Trigger-Prüfung (Block B)
+                # Prüfe, ob beide Bedingungen (BLE + Intent) "scharf" sind
+                if _state.ble_status == BLEStatus.SUCCESS and _state.intent_status == IntentStatus.KOMMEN:
+                    
+                    door_opened = await _check_and_trigger_door()
+                    
+                    if door_opened:
+                        # Erfolgreich geöffnet -> COOLDOWN
+                        _state.system_state = SystemState.COOLDOWN
+                        _reset_to_idle() # Setzt History zurück, behält BLE-Status
+                        continue
+                
+                # G. Reset-Bedingung (BLE = FAILED)
+                # (Prüfen wir *nach* dem Trigger, falls BLE erst jetzt fehlschlägt)
+                if _state.ble_status == BLEStatus.FAILED:
+                    log.info("BLE-Status 'FAILED' erkannt (NICHT ÖFFNEN FALL 1). Reset zu IDLE.")
+                    _reset_to_idle()
+                    continue
+
+            # Nächste Schleife
+            await asyncio.sleep(0) # Gibt Kontrolle kurz ab, falls Queue sofort wieder voll ist
+
+    except asyncio.CancelledError:
+        log.info("Radar Logic Task abgebrochen.")
+    except Exception as e:
+        log.critical(f"Kritischer Fehler im Radar Logic Task: {e}", exc_info=True)
+    finally:
+        # Wenn dieser Task stirbt, breche auch den BLE-Scan ab, falls er läuft
+        if _state.ble_task and not _state.ble_task.done():
+            _state.ble_task.cancel()
+        log.info("Radar Logic Task beendet.")

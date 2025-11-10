@@ -6,6 +6,7 @@
 # Modified: October 17, 2025, 11:45 UTC - Korrektur der Fehlerbehandlung und Task-Verwaltung.
 # Modified: October 17, 2025, 12:10 UTC - Korrektur: Sauberes Beenden des Hauptprogramms nach Initialisierungsfehler und Task-Cleanup.
 # Modified: November 07, 2025, 15:05 UTC - Logging-Refactor: Benannter Logger, Präfixe entfernt, redundante Log-Konfig entfernt.
+# Modified: November 09, 2025, 13:55 UTC - Anpassung an neue Task-Struktur von radar_logic.py (reader/logic).
 
 import asyncio
 import multiprocessing
@@ -41,7 +42,8 @@ async def main():
 
     # Variablen für Tasks, um sie im finally-Block referenzieren zu können
     display_task = None
-    radar_task = None
+    radar_reader_task = None # NEU
+    radar_logic_task = None  # NEU
     
     try:
         # --- Initialisierung der Module ---
@@ -63,13 +65,14 @@ async def main():
         # Wenn Radar-Initialisierung fehlschlägt, ist dies kritisch und das System muss beendet werden.
         await radar_logic.init_radar_hardware()
         
-        # --- Starte den Radar-Master-Task (nur wenn Radar-Hardware erfolgreich initialisiert wurde) ---
-        radar_task = asyncio.create_task(radar_logic.radar_master_task())
-        log.info("Radar-Master-Task gestartet.")
+        # --- Starte die neuen Radar-Tasks (Leser und Logik getrennt) ---
+        radar_reader_task = asyncio.create_task(radar_logic.radar_reader_task())
+        radar_logic_task = asyncio.create_task(radar_logic.radar_logic_task())
+        log.info("Radar Reader und Logic Tasks gestartet.")
 
         # Warte auf das Beenden aller Tasks (sollte im Normalfall nicht passieren, da sie Endlosschleifen sind)
         # Füge nur Tasks hinzu, die auch tatsächlich gestartet wurden
-        tasks_to_gather = [t for t in [radar_task, display_task] if t is not None]
+        tasks_to_gather = [t for t in [radar_reader_task, radar_logic_task, display_task] if t is not None]
         if tasks_to_gather:
             await asyncio.gather(*tasks_to_gather)
         else:
@@ -87,14 +90,16 @@ async def main():
     finally:
         log.info("Starte Cleanup der Asyncio-Tasks...")
         # Tasks abbrechen, falls sie noch laufen
-        if radar_task and not radar_task.done():
-            radar_task.cancel()
+        if radar_reader_task and not radar_reader_task.done():
+            radar_reader_task.cancel()
+        if radar_logic_task and not radar_logic_task.done():
+            radar_logic_task.cancel()
         if display_task and not display_task.done():
             display_task.cancel()
         
         # Warte, bis alle Tasks tatsächlich abgeschlossen sind (mit Timeout, falls sie hängen bleiben)
         try:
-            tasks_to_wait_for = [t for t in [radar_task, display_task] if t is not None and not t.done()]
+            tasks_to_wait_for = [t for t in [radar_reader_task, radar_logic_task, display_task] if t is not None and not t.done()]
             if tasks_to_wait_for:
                 # Warten auf die verbleibenden Tasks mit einem Timeout
                 await asyncio.wait_for(asyncio.gather(*tasks_to_wait_for, return_exceptions=True), timeout=5.0)
@@ -106,7 +111,7 @@ async def main():
         except Exception as e:
             log.error(f"Fehler beim Beenden der Asyncio-Tasks: {e}")
 
-        # Final cleanup actions (Radar-Verbindung wird im finally-Block von radar_master_task geschlossen)
+        # Final cleanup actions (Radar-Verbindung wird im finally-Block von radar_reader_task geschlossen)
         log.info("System-Haupt-Loop beendet.")
 
 # --- Hauptausführung ---
