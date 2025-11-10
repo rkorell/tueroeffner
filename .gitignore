@@ -34,6 +34,8 @@ MANIFEST
 
 # SECURITY! - codesend-basis code in a local secret file:
 private_config.py
+# NO pictures on git...
+known_faces/
 
 # Installer logs
 pip-log.txt
