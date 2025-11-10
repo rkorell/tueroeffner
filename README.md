@@ -1,7 +1,7 @@
-# Dokumentation: Modulares BLE-Radar Türöffnungssystem
+# Modulares BLE-Radar Türöffnungssystem
 
 **Stand:** 10. November 2025
-**Version:** 5.0 (Vollständig, inkl. Flow-Diagramme als Markup)
+**Version:** 5.0 
 
 ---
 
@@ -125,7 +125,7 @@ Um eine hohe Robustheit gegen Fehlauslösungen (z.B. vorbeilaufende Personen, Ha
 
 ---
 
-## 5. Variablen-Dokumentation (Vollständig)
+## 5. Variablen-Dokumentation
 
 ### 5.1. Konfigurations-Variablen (`system_config.json`)
 
@@ -138,7 +138,6 @@ Diese Variablen steuern das statische Verhalten des Systems und werden beim Star
 | | `relay_activation_duration_sec` | Dauer des Öffnungsimpulses in Sekunden (z.B. `4`). | `door_control` |
 | | `min_detection_interval` | Globaler Cooldown für den Aktor in Sekunden (z.B. `20`). Verhindert Relais-Überlastung. | `door_control` |
 | **`weather_config`** | `station_id` | ID der Personal Weather Station (PWS) für lokale Daten. | `display_logic` |
-| | `api_key` | API-Key für Weather Underground. | `display_logic` |
 | | `query_interval_sec` | Zeit zwischen zwei Wetter-API-Abfragen in Sekunden (z.B. `300` = 5min). | `display_logic` |
 | **`logging_config`** | `level` | Log-Level (z.B. `INFO`, `DEBUG`, `TRACE`). | `config`, alle |
 | | `file_enabled` | Ob Logs in eine Datei geschrieben werden (`true`/`false`). | `config` |
@@ -153,7 +152,6 @@ Diese Variablen steuern das statische Verhalten des Systems und werden beim Star
 | | `sign_change_y_max` | Max. Y-Distanz (mm) für einen gültigen Trigger. Filtert ferne Vorbeiläufer (z.B. `500`). | `radar_logic` |
 | | `sign_change_x_max` | Max. seitlicher Abstand (mm) bei X=0 Durchgang. Filtert Rauschen (z.B. `700`). | `radar_logic` |
 | | `radar_loop_delay` | Pause zwischen I/O-Zyklen in Sekunden (z.B. `0.05` = 50ms). Steuert die Abtastrate. | `radar_logic` |
-| **`known_beacons`**| *(Array)* | Liste autorisierter Beacons mit MAC, Name, IDs und Berechtigungsstatus. | `ble_logic_R` |
 | **`auth_criteria`**| *(Objekt)* | Definiert, welche Beacon-Merkmale (iBeacon, UID, URL, MAC) für eine erfolgreiche Identifikation `REQUIRED` sind. | `ble_logic_R` |
 
 ### 5.2. Interne Konstanten (Hardcoded)
